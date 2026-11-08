@@ -1,0 +1,71 @@
+# fnstrip config. Copy to ~/.config/fnstrip/config.toml and edit; the renderer reads it at
+# start (`systemctl --user restart t1-touchbar.service` to apply). This file is also built
+# into the binary as the fallback when yours is missing or has an error (the error goes to
+# `journalctl --user -u t1-touchbar.service`).
+#
+# Format: a strict subset of TOML. Values are quoted strings: "basic" (escapes \" \\ \n \t)
+# or 'literal' (no escapes, handy for shell commands with double quotes).
+#
+# default_row = "controls" (brightness, media, volume; F1-F12 while Fn is held), or
+#               "function" (Esc + F1-F12; the controls while Fn is held). Goes above the
+#               first [[extras]].
+#
+# [[extras]]: buttons of the extras row (double-tap Fn; it stays until the next Fn press),
+# up to 10.
+#   icon    = camera | mic | vpn  (toggles, left after Esc, in this order; each has an on
+#             and an off look; lit, the camera shows its picture, the mic a spectrum and the
+#             vpn a traffic graph with its rates)
+#           | cpu | mem | disk | net | battery | temp | fan  (meters, at the right end: a
+#             live graph and value; the battery fills to its charge, its icon shows quarters
+#             and a bolt while on power, green on power, amber at 20% and red at 10%, with
+#             the time to empty or full; temp is the CPU package in °C, red within 20° of
+#             critical; fan is the first two fans' rpm, as lines on one scale from just
+#             under the lowest fan minimum to the highest maximum)
+#   command = run with `sh -c` when tapped (optional for meters)
+#   status  = optional; run with `sh -c` while the row shows (every second) and after a
+#             tap. Exit 0 lights the button (green plate, "on" icon). Without it the
+#             button is never lit.
+#   interface = for vpn and net: the network interface to graph (vpn: default wg0;
+#             net: default every interface of a device that is up)
+# Commands run as you, with the t1-touchbar.service environment.
+#
+# Examples (see contrib/t1-webcam for the camera's service and script; the VPN command is
+# yours to supply):
+#
+#   [[extras]]
+#   icon = "camera"
+#   command = "webcam toggle"
+#   status = "systemctl --user --quiet is-active t1-webcam.service"
+#
+#   [[extras]]
+#   icon = "vpn"
+#   command = "my-vpn-toggle"
+#   status = "test -e /sys/class/net/wg0"
+
+default_row = "controls"
+
+[[extras]]
+# Lit while the mic is live; struck through when muted.
+icon = "mic"
+command = "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle"
+status = "! wpctl get-volume @DEFAULT_AUDIO_SOURCE@ | grep -q MUTED"
+
+[[extras]]
+# Graphs: user (bottom) and system CPU time.
+icon = "cpu"
+
+[[extras]]
+# Graphs: memory in use (bottom) and page cache.
+icon = "mem"
+
+[[extras]]
+# Graphs: bytes read (bottom) and written per second, scaled to the recent peak.
+icon = "disk"
+
+[[extras]]
+# Graphs: bytes received (bottom) and sent per second, scaled to the recent peak.
+icon = "net"
+
+[[extras]]
+# Fills to the charge; green with a bolt while on power.
+icon = "battery"

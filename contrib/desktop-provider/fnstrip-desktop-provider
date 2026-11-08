@@ -1,0 +1,66 @@
+#!/bin/sh
+# A generic T1Bridge desktop provider: output volume and mute through PipeWire (wpctl), media
+# keys through MPRIS on the session bus (busctl), and a notification if the renderer falls
+# back. The contract is T1Bridge's docs/interfaces.md, "Desktop provider v1".
+#
+# Install to ~/.local/bin/fnstrip-desktop-provider, then point the service at it; see the
+# README. It runs as you, and each call must finish within 500 ms.
+
+SINK=@DEFAULT_AUDIO_SINK@
+CAP_AUDIO=1 CAP_MEDIA=2 CAP_NOTIFY=4
+
+# The first media player on the session bus, if any.
+player() {
+  busctl --user --no-legend list 2>/dev/null |
+    awk '$1 ~ /^org\.mpris\.MediaPlayer2\./ { print $1; exit }'
+}
+
+media() {
+  name=$(player)
+  [ -n "$name" ] || return 1
+  busctl --user call "$name" /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player "$1"
+}
+
+status() {
+  capabilities=0
+  volume=-
+  muted=-
+  # "Volume: 0.42" or "Volume: 0.42 [MUTED]"; PipeWire allows more than 100%, the contract doesn't.
+  if state=$(wpctl get-volume "$SINK" 2>/dev/null); then
+    parsed=$(printf '%s\n' "$state" | awk '/^Volume:/ {
+      level = int($2 * 100 + 0.5); if (level > 100) level = 100
+      print level, (/\[MUTED\]/ ? 1 : 0); exit }')
+    if [ -n "$parsed" ]; then
+      capabilities=$((capabilities | CAP_AUDIO))
+      volume=${parsed% *}
+      muted=${parsed#* }
+    fi
+  fi
+  [ -n "$(player)" ] && capabilities=$((capabilities | CAP_MEDIA))
+  command -v notify-send >/dev/null 2>&1 && capabilities=$((capabilities | CAP_NOTIFY))
+  printf 'T1BRIDGE-DESKTOP 1 %s %s %s\n' "$capabilities" "$volume" "$muted"
+}
+
+[ "${1:-}" = v1 ] || exit 2
+case ${2:-} in
+  status) status ;;
+  set-volume)
+    case ${3:-} in
+      '' | *[!0-9]*) exit 2 ;;
+    esac
+    [ "$3" -le 100 ] || exit 2
+    wpctl set-volume "$SINK" "$3%"
+    ;;
+  toggle-mute) wpctl set-mute "$SINK" toggle ;;
+  media-previous) media Previous ;;
+  media-play-pause) media PlayPause ;;
+  media-next) media Next ;;
+  notify-renderer-fallback)
+    case ${3:-} in
+      selection-unavailable | selection-exited) ;;
+      *) exit 2 ;;
+    esac
+    notify-send -a fnstrip "Touch Bar" "fnstrip is not running ($3); using the built-in renderer."
+    ;;
+  *) exit 2 ;;
+esac

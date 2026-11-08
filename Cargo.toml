@@ -1,0 +1,25 @@
+[package]
+name = "fnstrip"
+version = "0.1.0"
+description = "A customizable Touch Bar renderer for T1 MacBook Pros running t1bridge"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+license = "MIT"
+
+# Low-level pieces stay upstream, pinned to one t1bridge release.
+# The renderer itself (src/) is a modified copy of t1-touchbar v0.1.12.
+[dependencies]
+t1-platform = { git = "https://github.com/standardagents/t1bridge", tag = "v0.1.12", default-features = false, features = ["frame-memfd", "seqpacket"] }
+t1-touchbar-hw = { git = "https://github.com/standardagents/t1bridge", tag = "v0.1.12", default-features = false }
+
+[dev-dependencies]
+t1-platform = { git = "https://github.com/standardagents/t1bridge", tag = "v0.1.12", default-features = false, features = ["seqpacket-test-support"] }
+
+# Same standard as upstream.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }

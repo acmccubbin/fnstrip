@@ -1,0 +1,26 @@
+# Decode the T1 camera's H.264 into the v4l2loopback device
+# /dev/video10 ("T1 camera (browser)") so browsers can use it. On demand only — the
+# camera light is on while this runs. Control with ~/.local/bin/webcam on|off|status.
+# Install to ~/.config/systemd/user/t1-webcam.service
+[Unit]
+Description=T1 camera -> browser-compatible virtual webcam
+
+[Service]
+# -hwaccel vaapi: decode on the Intel GPU (iHD driver, renderD128): ~18% of a core instead
+# of ~68% for software decoding. ffmpeg falls back to software if VA-API can't start.
+ExecStart=/usr/bin/ffmpeg -hide_banner -loglevel warning -nostdin \
+  -fflags nobuffer -flags low_delay \
+  -hwaccel vaapi -hwaccel_device /dev/dri/renderD128 \
+  -f v4l2 -input_format h264 -video_size 1280x720 -framerate 30 \
+  -i /dev/v4l/by-id/usb-Apple_Inc._iBridge-video-index0 \
+  -pix_fmt yuv420p -f v4l2 /dev/video10 \
+  -vf fps=12,hflip,crop=iw:iw*60/182,scale=182:60 -pix_fmt bgr0 -c:v rawvideo \
+  -f image2 -update 1 -atomic_writing 1 %t/t1-webcam-preview.bgr0
+# Second output: a 182x60 mirrored preview (raw XRGB8888, rewritten whole ~12 times a
+# second) for the fnstrip camera button (src/live.rs). It reads this
+# file because the loopback device refuses a second opener while a browser call has it.
+ExecStopPost=/usr/bin/rm -f %t/t1-webcam-preview.bgr0
+Restart=on-failure
+RestartSec=3
+# ffmpeg exits 255 on SIGTERM (webcam off); not a failure.
+SuccessExitStatus=255
