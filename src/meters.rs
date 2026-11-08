@@ -667,17 +667,20 @@ fn read_battery() -> Option<Battery> {
     parse_battery(&values, on_external_power())
 }
 
-/// A battery from its `uevent` values: charge from `CAPACITY` (as the desktop shows it),
-/// the estimate from charge and current (or energy and power, whichever it reports).
+/// A battery from its `uevent` values: the charge as now over full (charge or energy,
+/// whichever it reports), as `upower` and the desktop show it, else `CAPACITY` (some
+/// batteries report that against the design capacity, so a worn one reads low); the
+/// estimate from charge and current (or energy and power).
 #[allow(clippy::cast_precision_loss)]
 fn parse_battery(values: &str, mains: bool) -> Option<Battery> {
     let number = |name: &str| field(values, name)?.parse::<f64>().ok();
     let status = field(values, "STATUS").unwrap_or("Unknown");
-    let level = match number("CAPACITY") {
-        Some(percent) => percent / 100.0,
-        None => number("CHARGE_NOW")? / number("CHARGE_FULL")?.max(1.0),
-    }
-    .clamp(0.0, 1.0);
+    let now_over_full =
+        |now: &str, full: &str| Some(number(now)? / number(full).filter(|full| *full > 0.0)?);
+    let level = now_over_full("CHARGE_NOW", "CHARGE_FULL")
+        .or_else(|| now_over_full("ENERGY_NOW", "ENERGY_FULL"))
+        .or_else(|| Some(number("CAPACITY")? / 100.0))?
+        .clamp(0.0, 1.0);
     let charging = status == "Charging";
     let powered = mains || charging || status == "Full";
     let (now, full, rate) = match number("CHARGE_NOW") {
@@ -898,7 +901,8 @@ mod tests {
             POWER_SUPPLY_CHARGE_FULL=5147000\nPOWER_SUPPLY_CHARGE_NOW=4882000\n\
             POWER_SUPPLY_CAPACITY=74\n";
         let battery = parse_battery(uevent, false).unwrap();
-        assert!((battery.level - 0.74).abs() < 1e-9);
+        // Now over full (94.9%), not CAPACITY (74%, against the design capacity).
+        assert!((battery.level - 4_882_000.0 / 5_147_000.0).abs() < 1e-9);
         assert!(!battery.powered);
         assert_eq!(battery.hours.map(format_hours).as_deref(), Some("2:45"));
         // Plugged in: powered, and no time to empty.
@@ -910,6 +914,15 @@ mod tests {
             POWER_SUPPLY_CAPACITY=60\n";
         let battery = parse_battery(uevent, true).unwrap();
         assert_eq!(battery.hours.map(format_hours).as_deref(), Some("1:00"));
+        assert!((battery.level - 0.6).abs() < 1e-9);
+        // Only CAPACITY: used as is. Charge a little over full (as now, plugged in): 100%.
+        let level = |uevent| parse_battery(uevent, true).unwrap().level;
+        assert!((level("POWER_SUPPLY_CAPACITY=42\n") - 0.42).abs() < 1e-9);
+        assert!(
+            (level("POWER_SUPPLY_CHARGE_NOW=5174000\nPOWER_SUPPLY_CHARGE_FULL=5147000\n") - 1.0)
+                .abs()
+                < 1e-9
+        );
         // `CAPACITY_LEVEL` doesn't pass for `CAPACITY`.
         assert_eq!(
             field("POWER_SUPPLY_CAPACITY_LEVEL=Normal\n", "CAPACITY"),
