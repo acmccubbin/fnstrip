@@ -9,11 +9,12 @@ license = "MIT"
 
 # Low-level pieces stay upstream, pinned to one t1bridge release.
 # The renderer itself (src/) is a modified copy of t1-touchbar v0.1.12.
-[dependencies]
+# The hardware side; not part of the browser build (web/), which only draws.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 t1-platform = { git = "https://github.com/standardagents/t1bridge", tag = "v0.1.12", default-features = false, features = ["frame-memfd", "seqpacket"] }
 t1-touchbar-hw = { git = "https://github.com/standardagents/t1bridge", tag = "v0.1.12", default-features = false }
 
-[dev-dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 t1-platform = { git = "https://github.com/standardagents/t1bridge", tag = "v0.1.12", default-features = false, features = ["seqpacket-test-support"] }
 
 # Same standard as upstream.

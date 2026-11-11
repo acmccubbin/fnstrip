@@ -1,6 +1,6 @@
-//! Live inputs shared by the screensaver scenes and the extras buttons: a camera feed
-//! (ffmpeg → raw pictures), the webcam service's preview file, an audio feed
-//! (pw-record → samples) and the FFT spectrum.
+//! Live inputs for the extras buttons and the test screen: a camera feed (ffmpeg → raw
+//! pictures), the webcam service's preview file (the camera button's picture) and an audio
+//! feed (pw-record → samples) for the spectra (see `spectrum`).
 //!
 //! Each feed is a child process plus a reader thread keeping only the latest data; dropping
 //! the feed kills the process.
@@ -18,140 +18,16 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Instant, SystemTime};
+use std::time::SystemTime;
 
-const FFT_SIZE: usize = 2048;
-const SAMPLE_RATE: f32 = 48_000.0;
-const LOWEST_HZ: f32 = 30.0;
-const HIGHEST_HZ: f32 = 18_000.0;
-/// Level mapping: this many dB below full scale is an empty bar, `TOP_DB` a full one.
-const FLOOR_DB: f32 = -80.0;
-const TOP_DB: f32 = -20.0;
+pub(crate) use crate::spectrum::{AudioSource, FFT_SIZE};
+
 /// The built-in camera (H.264 only), and the browser-compatible loopback that
 /// `t1-webcam.service` feeds while it holds the camera.
 const CAMERA_DEVICE: &str = "/dev/v4l/by-id/usb-Apple_Inc._iBridge-video-index0";
 const CAMERA_LOOPBACK: &str = "/dev/video10";
 /// In `$XDG_RUNTIME_DIR`: see [`CameraPreview`].
 const CAMERA_PREVIEW: &str = "t1-webcam-preview.bgr0";
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum AudioSource {
-    /// The default source: the microphone, or line in when that is the default.
-    Input,
-    /// The default sink's monitor: whatever is playing.
-    Speakers,
-}
-
-/// FFT state and smoothed bar levels for a spectrum display.
-pub(crate) struct Spectrum {
-    window: Vec<f32>,
-    twiddles: Vec<[f32; 2]>,
-    data: Vec<[f32; 2]>,
-    /// FFT bin range per bar.
-    pub(crate) bands: Vec<(usize, usize)>,
-    pub(crate) targets: Vec<f32>,
-    pub(crate) levels: Vec<f32>,
-    pub(crate) peaks: Vec<f32>,
-    last: Instant,
-}
-
-impl Spectrum {
-    pub(crate) fn new(bars: usize) -> Self {
-        let bars = bars.max(1);
-        let size = FFT_SIZE as f32;
-        let bin = |hz: f32| (hz * size / SAMPLE_RATE) as usize;
-        let bands = (0..bars)
-            .map(|bar| {
-                let edge =
-                    |i: usize| LOWEST_HZ * (HIGHEST_HZ / LOWEST_HZ).powf(i as f32 / bars as f32);
-                let low = bin(edge(bar)).max(1);
-                (low, bin(edge(bar + 1)).max(low + 1).min(FFT_SIZE / 2))
-            })
-            .collect();
-        Self {
-            window: (0..FFT_SIZE)
-                .map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / size).cos())
-                .collect(),
-            twiddles: (0..FFT_SIZE / 2)
-                .map(|k| {
-                    let angle = -std::f32::consts::TAU * k as f32 / size;
-                    [angle.cos(), angle.sin()]
-                })
-                .collect(),
-            data: vec![[0.0; 2]; FFT_SIZE],
-            bands,
-            targets: vec![0.0; bars],
-            levels: vec![0.0; bars],
-            peaks: vec![0.0; bars],
-            last: Instant::now(),
-        }
-    }
-
-    pub(crate) fn analyse(&mut self, samples: &[f32]) {
-        for ((slot, sample), weight) in self.data.iter_mut().zip(samples).zip(&self.window) {
-            *slot = [sample * weight, 0.0];
-        }
-        fft(&mut self.data, &self.twiddles);
-        // Hann window sums to N/2, so a full-scale sine peaks at amplitude 1.0 (0 dB).
-        let scale = 4.0 / FFT_SIZE as f32;
-        for (target, &(low, high)) in self.targets.iter_mut().zip(&self.bands) {
-            let magnitude = self.data[low..high]
-                .iter()
-                .map(|[re, im]| (re * re + im * im).sqrt())
-                .fold(0.0, f32::max);
-            let db = 20.0 * (magnitude * scale).max(1e-9).log10();
-            *target = ((db - FLOOR_DB) / (TOP_DB - FLOOR_DB)).clamp(0.0, 1.0);
-        }
-    }
-
-    /// Bars jump up and fall at a steady rate; peak markers fall more slowly.
-    pub(crate) fn settle(&mut self) {
-        let dt = self.last.elapsed().as_secs_f32().min(0.1);
-        self.last = Instant::now();
-        for ((level, peak), &target) in self
-            .levels
-            .iter_mut()
-            .zip(&mut self.peaks)
-            .zip(&self.targets)
-        {
-            *level = target.max(*level - 2.5 * dt);
-            *peak = level.max(*peak - 0.4 * dt);
-        }
-    }
-}
-
-/// In-place iterative radix-2 FFT; `data.len()` is a power of two.
-fn fft(data: &mut [[f32; 2]], twiddles: &[[f32; 2]]) {
-    let size = data.len();
-    let mut j = 0;
-    for i in 1..size {
-        let mut bit = size >> 1;
-        while j & bit != 0 {
-            j ^= bit;
-            bit >>= 1;
-        }
-        j |= bit;
-        if i < j {
-            data.swap(i, j);
-        }
-    }
-    let mut length = 2;
-    while length <= size {
-        let half = length / 2;
-        let step = size / length;
-        for start in (0..size).step_by(length) {
-            for k in 0..half {
-                let [wr, wi] = twiddles[k * step];
-                let [ar, ai] = data[start + k];
-                let [br, bi] = data[start + k + half];
-                let (tr, ti) = (br * wr - bi * wi, br * wi + bi * wr);
-                data[start + k] = [ar + tr, ai + ti];
-                data[start + k + half] = [ar - tr, ai - ti];
-            }
-        }
-        length <<= 1;
-    }
-}
 
 /// `pw-record` (mono f32 at 48 kHz) into a rolling window of the latest `FFT_SIZE`
 /// samples. Only alive while something shows it.
@@ -377,6 +253,7 @@ impl CameraPreview {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spectrum::{SAMPLE_RATE, Spectrum};
 
     #[test]
     fn fft_finds_a_pure_tone() {

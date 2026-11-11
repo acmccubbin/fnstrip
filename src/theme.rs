@@ -50,7 +50,7 @@ impl Default for Theme {
 }
 
 impl Theme {
-    pub const NAMES: [&str; 4] = ["default", "mono", "pastel", "rainbow"];
+    pub const NAMES: [&str; 4] = ["default", "pastel", "mono", "rainbow"];
     /// The colour names a `[colors]` section takes.
     pub const COLOR_NAMES: [&str; 9] = [
         "background",

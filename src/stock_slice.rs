@@ -740,7 +740,7 @@ impl StockBar {
     /// # Errors
     ///
     /// Rejects an internally invalid draw.
-    pub(crate) fn render_live_extras(
+    pub fn render_live_extras(
         self,
         frame: &mut Xrgb8888Frame<'_>,
         levels: StockLevels,
@@ -777,7 +777,7 @@ impl StockBar {
 
     /// Where the play/pause button sits on the controls row, if it shows.
     #[must_use]
-    pub(crate) fn play_pause_bounds(self) -> Option<Rectangle> {
+    pub fn play_pause_bounds(self) -> Option<Rectangle> {
         self.normal_controls()
             .into_iter()
             .find(|item| {
@@ -792,7 +792,7 @@ impl StockBar {
     /// # Errors
     ///
     /// Rejects an internally invalid draw.
-    pub(crate) fn render_live_media(
+    pub fn render_live_media(
         self,
         frame: &mut Xrgb8888Frame<'_>,
         pressed: Option<StockAction>,
@@ -817,7 +817,7 @@ impl StockBar {
 
     /// Where extras button `index` sits, if configured.
     #[must_use]
-    pub(crate) fn extra_bounds(self, index: u8) -> Option<Rectangle> {
+    pub fn extra_bounds(self, index: u8) -> Option<Rectangle> {
         self.extra_controls()
             .into_iter()
             .find(|(i, _, _)| *i == index)

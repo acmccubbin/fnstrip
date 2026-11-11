@@ -1,18 +1,23 @@
-//! Triple-tap-and-hold Fn: full-colour animations to measure frame rate, render cost and
-//! CPU (this renderer and the root `t1-touchbar-hw` service), plus spectrum analysers of
-//! the default audio input (microphone or line in) and of the speaker output, and a live
-//! view of the built-in camera (one plate, or a wide slice across the whole bar).
+//! Triple-tap-and-hold Fn (with `debug_gestures = "on"`): full-colour animations to measure
+//! frame rate, render cost and CPU (this renderer and the root `t1-touchbar-hw` service), then
+//! spectrum analysers of the default audio input (microphone or line in) and of the speaker
+//! output, which say so in the middle of the bar when there's no signal, and the built-in
+//! camera as a wide slice across the whole bar.
 //!
 //! Stats show on the right end of the bar and go to the journal once a second. Every
 //! measured stretch (one scene at one buffer count) is appended to
 //! `$XDG_STATE_HOME/fnstrip/screensaver.log` (default `~/.local/state`). While it runs:
 //! tap the left end for the next scene, tap the stats to change how many frame buffers may
-//! be in flight (1–3), tap anywhere else or press Fn to exit. After the last scene comes
-//! "A": an automatic sweep of every non-audio scene at every buffer count, which logs a
-//! results table and then exits.
+//! be in flight (1–3), tap anywhere else or press Fn to exit.
 //!
-//! The button scenes animate only one to three plates and submit just those rectangles
-//! as damage, to measure what partial updates cost compared with full frames.
+//! Ideas for tinkering: a scene is a [`Scene`] value, a name, an arm in `render` that fills
+//! the frame, and an entry in [`SCENES`]. Earlier versions also had (see this file's git
+//! history before fnstrip 0.1.1):
+//! - button scenes animating only one to three plates and submitting just those
+//!   rectangles as damage, to measure partial updates against full frames;
+//! - the camera in a single plate (the extras camera button now shows it that way);
+//! - an automatic sweep, "A", through every animation at every buffer count, logging a
+//!   results table and then exiting.
 
 // Pixel maths is f32; every float-to-int cast is clamped or wrapped into range first.
 #![allow(
@@ -26,11 +31,27 @@ use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+#[cfg(not(target_arch = "wasm32"))]
 use t1_touchbar_hw::frame_state::DamageRectangle;
 
-use crate::live::{AudioFeed, AudioSource, CameraFeed, Spectrum};
+use crate::clock::Instant;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::live::{AudioFeed, CameraFeed};
+#[cfg(target_arch = "wasm32")]
+use crate::page_feeds::{AudioFeed, CameraFeed};
+use crate::spectrum::{AudioSource, Spectrum};
+
+/// The browser build's stand-in for the hardware service's damage rectangle.
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DamageRectangle {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Scene {
@@ -38,18 +59,9 @@ enum Scene {
     Ribbons,
     Starfield,
     Fire,
-    /// Plasma in this many stock-sized plates; only they are submitted as damage.
-    Buttons(usize),
     Spectrum(AudioSource),
-    Camera(CameraView),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CameraView {
-    /// The middle of the picture in the first stock plate; only that plate is damage.
-    Button,
-    /// A horizontal strip through the middle of the picture, the full width of the bar.
-    Wide,
+    /// A horizontal strip through the middle of the camera picture, the width of the bar.
+    Camera,
 }
 
 impl Scene {
@@ -59,33 +71,22 @@ impl Scene {
             Self::Ribbons => "ribbons",
             Self::Starfield => "starfield",
             Self::Fire => "fire",
-            Self::Buttons(1) => "1-button",
-            Self::Buttons(2) => "2-buttons",
-            Self::Buttons(_) => "3-buttons",
             Self::Spectrum(AudioSource::Input) => "mic",
             Self::Spectrum(AudioSource::Speakers) => "speakers",
-            Self::Camera(CameraView::Button) => "cam",
-            Self::Camera(CameraView::Wide) => "cam-wide",
+            Self::Camera => "cam-wide",
         }
     }
 }
 
-const SCENES: [Scene; 11] = [
+const SCENES: [Scene; 7] = [
     Scene::Plasma,
     Scene::Ribbons,
     Scene::Starfield,
     Scene::Fire,
-    Scene::Buttons(1),
-    Scene::Buttons(2),
-    Scene::Buttons(3),
     Scene::Spectrum(AudioSource::Input),
     Scene::Spectrum(AudioSource::Speakers),
-    Scene::Camera(CameraView::Button),
-    Scene::Camera(CameraView::Wide),
+    Scene::Camera,
 ];
-/// The mode after the last scene: the automatic sweep.
-const SWEEP_MODE: usize = SCENES.len();
-const SWEEP_STEP: Duration = Duration::from_secs(5);
 /// Each measured stretch drops its first second (scene switch, buffer registration).
 const WARMUP: Duration = Duration::from_secs(1);
 /// Left end: next scene.
@@ -95,39 +96,38 @@ const HUD_WIDTH: usize = 420;
 const LABEL_WIDTH: usize = 120;
 const GLYPH_SCALE: usize = 3;
 const GLYPH_ADVANCE: usize = 6 * GLYPH_SCALE;
-/// Stock plate geometry (see `StockBar`): the button scenes use the same slots.
-const PLATE_LEFT: usize = 194;
-const PLATE_PITCH: usize = 190;
-const PLATE_WIDTH: usize = 182;
-const PLATE_COUNT: usize = 8;
 const PALETTE_SIZE: usize = 1024;
 const STAR_COUNT: usize = 700;
 const FIRE_STEPS_PER_SECOND: f32 = 60.0;
 const BAR_PITCH: usize = 20;
 const BAR_WIDTH: usize = 16;
+/// Below this peak level (about -74 dBFS) the audio counts as no signal...
+const QUIET_LEVEL: f32 = 2e-4;
+/// ...and after this long the scene says so.
+const QUIET_AFTER: Duration = Duration::from_secs(1);
+/// The camera scene says so when no picture has come after this long (ffmpeg needs a moment).
+const CAMERA_WAIT: Duration = Duration::from_secs(2);
 /// Linux reports process CPU time in `USER_HZ` ticks, fixed at 100 per second.
 const USER_HZ: f32 = 100.0;
 const STATS_WINDOW: Duration = Duration::from_secs(1);
 
 /// What a tap at some x does while the screensaver runs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Zone {
+pub enum Zone {
     NextScene,
     NextBuffering,
     Exit,
 }
 
-pub(crate) struct Screensaver {
+pub struct Screensaver {
     width: usize,
     height: usize,
     stride: usize,
     max_buffers: usize,
     buffers: usize,
-    /// Index into `SCENES`, or `SWEEP_MODE`.
+    /// Index into `SCENES`.
     mode: usize,
-    sweep: Option<Sweep>,
     started: Instant,
-    full_frame: bool,
     rainbow: Vec<[u8; 4]>,
     flame: Vec<[u8; 4]>,
     columns: Vec<f32>,
@@ -138,8 +138,10 @@ pub(crate) struct Screensaver {
     rng: u32,
     spectrum: Spectrum,
     audio: Option<AudioFeed>,
-    camera: Option<(CameraView, CameraFeed)>,
+    camera: Option<CameraFeed>,
     in_flight: Vec<(u64, Instant)>,
+    /// Since when the audio scene has had no signal.
+    quiet_since: Option<Instant>,
     hw_pid: Option<u32>,
     window: Counters,
     segment: Counters,
@@ -160,13 +162,6 @@ struct Star {
     y: usize,
     speed: f32,
     colour: [f32; 3],
-}
-
-struct Sweep {
-    steps: Vec<(usize, usize)>,
-    step: usize,
-    step_started: Instant,
-    results: Vec<(Scene, usize, Summary)>,
 }
 
 /// Raw counts since some instant; turned into a [`Summary`] at the end of a window.
@@ -219,7 +214,7 @@ impl Counters {
 }
 
 impl Screensaver {
-    pub(crate) fn new(width: u32, height: u32, max_buffers: u32) -> Self {
+    pub fn new(width: u32, height: u32, max_buffers: u32) -> Self {
         let (width, height) = (width as usize, height as usize);
         let mut rng = 0x9E37_79B9;
         let stars = (0..STAR_COUNT)
@@ -256,9 +251,7 @@ impl Screensaver {
             max_buffers,
             buffers: 1,
             mode: 0,
-            sweep: None,
             started: Instant::now(),
-            full_frame: true,
             rainbow: (0..PALETTE_SIZE)
                 .map(|i| hsv(i as f32 / PALETTE_SIZE as f32, 0.9, 1.0))
                 .collect(),
@@ -273,6 +266,7 @@ impl Screensaver {
             audio: None,
             camera: None,
             in_flight: Vec::new(),
+            quiet_since: None,
             hw_pid,
             window: Counters::new(hw_pid),
             segment: Counters::new(hw_pid),
@@ -283,7 +277,8 @@ impl Screensaver {
         }
     }
 
-    pub(crate) const fn zone(&self, x: u32) -> Zone {
+    #[must_use]
+    pub const fn zone(&self, x: u32) -> Zone {
         let x = x as usize;
         if x < CYCLE_ZONE {
             Zone::NextScene
@@ -294,65 +289,36 @@ impl Screensaver {
         }
     }
 
+    /// The audio the current scene listens to, if any (the page feeds it in the browser).
+    #[must_use]
+    pub fn listening_to(&self) -> Option<AudioSource> {
+        self.audio.as_ref().map(|audio| audio.source)
+    }
+
     fn scene(&self) -> Scene {
-        match &self.sweep {
-            Some(sweep) => SCENES[sweep.steps[sweep.step].0],
-            None => SCENES[self.mode.min(SCENES.len() - 1)],
-        }
+        SCENES[self.mode.min(SCENES.len() - 1)]
     }
 
     /// How many frame buffers may be in flight at once.
-    pub(crate) fn buffers(&self) -> usize {
-        self.sweep
-            .as_ref()
-            .map_or(self.buffers, |sweep| sweep.steps[sweep.step].1)
+    #[must_use]
+    pub const fn buffers(&self) -> usize {
+        self.buffers
     }
 
-    pub(crate) fn next_scene(&mut self) {
+    pub fn next_scene(&mut self) {
         self.end_segment("manual");
-        if self.sweep.take().is_some() {
-            append_log(&format!("{} sweep cancelled", timestamp()));
-            self.mode = 0;
-        } else {
-            self.mode = (self.mode + 1) % (SWEEP_MODE + 1);
-        }
-        if self.mode == SWEEP_MODE {
-            self.start_sweep();
-        }
+        self.mode = (self.mode + 1) % SCENES.len();
         self.scene_changed();
     }
 
-    pub(crate) fn next_buffering(&mut self) {
-        if self.sweep.is_some() {
-            return;
-        }
+    pub fn next_buffering(&mut self) {
         self.end_segment("manual");
         self.buffers = self.buffers % self.max_buffers + 1;
         self.begin_segment();
     }
 
-    fn start_sweep(&mut self) {
-        let steps: Vec<_> = (0..SCENES.len())
-            .filter(|&scene| !matches!(SCENES[scene], Scene::Spectrum(_) | Scene::Camera(_)))
-            .flat_map(|scene| (1..=self.max_buffers).map(move |buffers| (scene, buffers)))
-            .collect();
-        append_log(&format!(
-            "{} sweep start: {} steps of {} s ({} s warm-up each)",
-            timestamp(),
-            steps.len(),
-            SWEEP_STEP.as_secs(),
-            WARMUP.as_secs(),
-        ));
-        self.sweep = Some(Sweep {
-            steps,
-            step: 0,
-            step_started: Instant::now(),
-            results: Vec::new(),
-        });
-    }
-
     fn scene_changed(&mut self) {
-        self.full_frame = true;
+        self.quiet_since = None;
         self.begin_segment();
         let wants = match self.scene() {
             Scene::Spectrum(source) => Some(source),
@@ -363,16 +329,12 @@ impl Screensaver {
             self.audio = None;
             self.audio = wants.and_then(AudioFeed::start);
         }
-        let wants = match self.scene() {
-            Scene::Camera(view) => Some(view),
-            _ => None,
-        };
-        if self.camera.as_ref().map(|(view, _)| *view) != wants {
+        let wants_camera = self.scene() == Scene::Camera;
+        if wants_camera != self.camera.is_some() {
             self.camera = None;
-            self.camera = wants.and_then(|view| {
-                let (width, height) = self.camera_size(view);
-                CameraFeed::start(width, height).map(|feed| (view, feed))
-            });
+            if wants_camera {
+                self.camera = CameraFeed::start(self.width, self.height);
+            }
         }
     }
 
@@ -409,11 +371,11 @@ impl Screensaver {
         Some(summary)
     }
 
-    pub(crate) fn submitted(&mut self, frame_id: u64) {
+    pub fn submitted(&mut self, frame_id: u64) {
         self.in_flight.push((frame_id, Instant::now()));
     }
 
-    pub(crate) fn released(&mut self, frame_id: u64) {
+    pub fn released(&mut self, frame_id: u64) {
         if let Some(index) = self.in_flight.iter().position(|(id, _)| *id == frame_id) {
             let (_, submitted) = self.in_flight.swap_remove(index);
             let latency = submitted.elapsed();
@@ -425,9 +387,8 @@ impl Screensaver {
         }
     }
 
-    /// Housekeeping between frames: warm-up, the HUD's one-second window, and sweep
-    /// steps. Returns true when a sweep has finished and the screensaver should exit.
-    pub(crate) fn tick(&mut self) -> bool {
+    /// Housekeeping between frames: the warm-up and the HUD's one-second window.
+    pub fn tick(&mut self) {
         if !self.segment_warm && self.segment.since.elapsed() >= WARMUP {
             self.segment = Counters::new(self.hw_pid);
             self.segment_warm = true;
@@ -447,43 +408,10 @@ impl Screensaver {
                 percent_label(self.hud.hw_cpu),
             );
         }
-        let step_done = self
-            .sweep
-            .as_ref()
-            .is_some_and(|sweep| sweep.step_started.elapsed() >= SWEEP_STEP);
-        if !step_done {
-            return false;
-        }
-        let scene = self.scene();
-        let buffers = self.buffers();
-        let summary = self.end_segment("sweep");
-        let Some(sweep) = self.sweep.as_mut() else {
-            return false;
-        };
-        if let Some(summary) = summary {
-            sweep.results.push((scene, buffers, summary));
-        }
-        sweep.step += 1;
-        sweep.step_started = Instant::now();
-        if sweep.step < sweep.steps.len() {
-            self.scene_changed();
-            return false;
-        }
-        let table = results_table(&sweep.results);
-        self.sweep = None;
-        append_log(&table);
-        eprintln!(
-            "fnstrip screensaver: sweep finished, table in {}",
-            log_path().display()
-        );
-        true
     }
 
-    pub(crate) fn finish(&mut self) {
+    pub fn finish(&mut self) {
         self.end_segment("manual");
-        if self.sweep.take().is_some() {
-            append_log(&format!("{} sweep cancelled", timestamp()));
-        }
         self.audio = None;
         self.camera = None;
         let seconds = self.started.elapsed().as_secs_f32();
@@ -499,10 +427,9 @@ impl Screensaver {
 
     /// Draws one frame into a negotiated XRGB8888 buffer and returns the damage to
     /// submit (empty = the whole frame).
-    pub(crate) fn render(&mut self, pixels: &mut [u8]) -> Vec<DamageRectangle> {
+    pub fn render(&mut self, pixels: &mut [u8]) -> Vec<DamageRectangle> {
         let begun = Instant::now();
         let t = self.started.elapsed().as_secs_f32();
-        let full = std::mem::take(&mut self.full_frame);
         let mut damage = match self.scene() {
             Scene::Plasma => {
                 self.plasma(pixels, t, 0, self.width);
@@ -520,12 +447,14 @@ impl Screensaver {
                 self.fire(pixels, t);
                 Vec::new()
             }
-            Scene::Buttons(count) => self.buttons(pixels, t, count, full),
             Scene::Spectrum(_) => {
                 self.draw_spectrum(pixels);
                 Vec::new()
             }
-            Scene::Camera(view) => self.draw_camera(pixels, view, full),
+            Scene::Camera => {
+                self.draw_camera(pixels);
+                Vec::new()
+            }
         };
         if self.overlay(pixels) && !damage.is_empty() {
             damage.push(self.rectangle(self.width.saturating_sub(HUD_WIDTH), HUD_WIDTH));
@@ -581,35 +510,6 @@ impl Screensaver {
                 *pixel = self.rainbow[palette_index(value)];
             }
         }
-    }
-
-    /// Stock-looking grey plates with plasma in the first `count`; only those are damage.
-    fn buttons(
-        &mut self,
-        pixels: &mut [u8],
-        t: f32,
-        count: usize,
-        full: bool,
-    ) -> Vec<DamageRectangle> {
-        if full {
-            pixels.fill(0);
-            for plate in count..PLATE_COUNT {
-                let left = PLATE_LEFT + plate * PLATE_PITCH;
-                let right = (left + PLATE_WIDTH).min(self.width);
-                for row in pixels.chunks_exact_mut(self.stride).take(self.height) {
-                    for pixel in row[left * 4..right * 4].as_chunks_mut::<4>().0 {
-                        *pixel = [53, 53, 53, 0];
-                    }
-                }
-            }
-        }
-        let mut damage = Vec::new();
-        for plate in 0..count {
-            let left = PLATE_LEFT + plate * PLATE_PITCH;
-            self.plasma(pixels, t, left, left + PLATE_WIDTH);
-            damage.push(self.rectangle(left, PLATE_WIDTH));
-        }
-        if full { Vec::new() } else { damage }
     }
 
     /// Three glowing sine ribbons drifting through the spectrum.
@@ -733,12 +633,21 @@ impl Screensaver {
 
     /// Log-spaced bars (30 Hz–18 kHz) of the latest audio, with falling peak markers.
     fn draw_spectrum(&mut self, pixels: &mut [u8]) {
+        let mut peak = 0.0_f32;
         if let Some(audio) = &self.audio
             && let Ok(samples) = audio.samples.lock()
         {
             self.spectrum.analyse(&samples);
+            peak = samples
+                .iter()
+                .fold(0.0, |peak, sample| peak.max(sample.abs()));
         }
         self.spectrum.settle();
+        if peak < QUIET_LEVEL {
+            self.quiet_since.get_or_insert_with(Instant::now);
+        } else {
+            self.quiet_since = None;
+        }
         let height = self.height as f32;
         for (y, row) in pixels
             .chunks_exact_mut(self.stride)
@@ -779,45 +688,53 @@ impl Screensaver {
                 }
             }
         }
-    }
-
-    /// Picture size ffmpeg delivers for a camera view: exactly the area it fills.
-    fn camera_size(&self, view: CameraView) -> (usize, usize) {
-        match view {
-            CameraView::Button => (PLATE_WIDTH, self.height),
-            CameraView::Wide => (self.width, self.height),
+        if self
+            .quiet_since
+            .is_some_and(|since| since.elapsed() >= QUIET_AFTER)
+        {
+            let message = match self.scene() {
+                Scene::Spectrum(AudioSource::Input) => "MICROPHONE INPUT MUTED, OR NO SIGNAL FOUND",
+                _ => "NOTHING IS PLAYING ON THE OUTPUT",
+            };
+            self.centred(pixels, message);
         }
     }
 
-    /// The latest camera picture, mid-grey until the first one arrives.
-    fn draw_camera(&self, pixels: &mut [u8], view: CameraView, full: bool) -> Vec<DamageRectangle> {
-        let (width, height) = self.camera_size(view);
-        let left = match view {
-            CameraView::Button => PLATE_LEFT,
-            CameraView::Wide => 0,
-        };
-        if full {
-            pixels.fill(0);
-        }
+    /// A message in the middle of the bar.
+    fn centred(&self, pixels: &mut [u8], message: &str) {
+        let width = message.chars().count() * GLYPH_ADVANCE;
+        let top = self.height.saturating_sub(7 * GLYPH_SCALE) / 2;
+        self.text(pixels, self.width.saturating_sub(width) / 2, top, message);
+    }
+
+    /// The latest camera picture, mid-grey until the first one arrives, and a message when
+    /// none has come after `CAMERA_WAIT` (camera off, in use, or not allowed).
+    fn draw_camera(&mut self, pixels: &mut [u8]) {
         let latest = self
             .camera
             .as_ref()
-            .and_then(|(_, camera)| camera.frame.lock().ok());
+            .and_then(|camera| camera.frame.lock().ok());
         let picture = latest.as_deref().filter(|frame| !frame.is_empty());
+        let width = self.width;
         for (y, row) in pixels
             .chunks_exact_mut(self.stride)
-            .take(height.min(self.height))
+            .take(self.height)
             .enumerate()
         {
-            let row = &mut row[left * 4..(left + width).min(self.width) * 4];
+            let row = &mut row[..width * 4];
             match picture {
                 Some(frame) => row.copy_from_slice(&frame[y * width * 4..][..row.len()]),
                 None => row.fill(53),
             }
         }
-        match view {
-            CameraView::Button if !full => vec![self.rectangle(left, width)],
-            _ => Vec::new(),
+        let waiting = picture.is_none();
+        drop(latest);
+        if waiting {
+            if self.quiet_since.get_or_insert_with(Instant::now).elapsed() >= CAMERA_WAIT {
+                self.centred(pixels, "NO CAMERA INPUT");
+            }
+        } else {
+            self.quiet_since = None;
         }
     }
 
@@ -826,10 +743,7 @@ impl Screensaver {
     fn overlay(&mut self, pixels: &mut [u8]) -> bool {
         let glyph_height = 7 * GLYPH_SCALE;
         self.darken(pixels, 0, LABEL_WIDTH);
-        let label = match &self.sweep {
-            Some(sweep) => format!("A{}/{}", sweep.step + 1, sweep.steps.len()),
-            None => format!("{}/{}", self.mode + 1, SWEEP_MODE + 1),
-        };
+        let label = format!("{}/{}", self.mode + 1, SCENES.len());
         self.text(
             pixels,
             12,
@@ -941,26 +855,6 @@ fn unit(state: &mut u32) -> f32 {
     (next_random(state) >> 8) as f32 / (1 << 24) as f32
 }
 
-fn results_table(results: &[(Scene, usize, Summary)]) -> String {
-    let mut table = format!(
-        "{} sweep results\n\n| scene | buffers | fps | render ms | submit->release ms | renderer cpu | hw cpu |\n|---|---|---|---|---|---|---|\n",
-        timestamp()
-    );
-    for (scene, buffers, summary) in results {
-        let _ = writeln!(
-            table,
-            "| {} | {buffers} | {:.1} | {:.2} | {:.2} | {} | {} |",
-            scene.name(),
-            summary.fps,
-            summary.render_ms,
-            summary.present_ms,
-            percent_label(summary.cpu),
-            percent_label(summary.hw_cpu),
-        );
-    }
-    table
-}
-
 fn log_path() -> PathBuf {
     std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
@@ -1065,6 +959,23 @@ const fn glyph(character: char) -> Option<[u8; 7]> {
         'S' => [0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E],
         'U' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
         'W' => [0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A],
+        'D' => [0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E],
+        'E' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F],
+        'G' => [0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F],
+        'I' => [0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E],
+        'J' => [0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C],
+        'K' => [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
+        'L' => [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F],
+        'N' => [0x11, 0x11, 0x19, 0x15, 0x13, 0x11, 0x11],
+        'O' => [0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
+        'Q' => [0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D],
+        'R' => [0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11],
+        'T' => [0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
+        'V' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04],
+        'X' => [0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11],
+        'Y' => [0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04],
+        'Z' => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F],
+        ',' => [0x00, 0x00, 0x00, 0x00, 0x0C, 0x04, 0x08],
         _ => return None,
     })
 }
@@ -1078,11 +989,54 @@ mod tests {
     }
 
     #[test]
+    fn audio_and_camera_scenes_say_when_there_is_no_signal() {
+        let mut pixels = vec![0_u8; 2170 * 60 * 4];
+        // Light text across the middle row of the bar (no bars without a signal).
+        let message_shown = |pixels: &[u8]| {
+            pixels.as_chunks::<4>().0[30 * 2170 + 700..30 * 2170 + 1470]
+                .iter()
+                .any(|pixel| pixel[..3] == [242, 242, 242])
+        };
+        for source in [AudioSource::Input, AudioSource::Speakers] {
+            let mut saver = saver();
+            saver.mode = SCENES
+                .iter()
+                .position(|scene| *scene == Scene::Spectrum(source))
+                .unwrap();
+            // No feed: no signal, but not yet for long enough.
+            saver.render(&mut pixels);
+            assert!(!message_shown(&pixels));
+            saver.quiet_since = Instant::now().checked_sub(QUIET_AFTER * 2);
+            saver.render(&mut pixels);
+            assert!(message_shown(&pixels), "{source:?}");
+        } // The camera with no picture: grey, then the message.
+        let mut saver = saver();
+        saver.mode = SCENES
+            .iter()
+            .position(|scene| *scene == Scene::Camera)
+            .unwrap();
+        saver.render(&mut pixels);
+        assert!(!message_shown(&pixels));
+        saver.quiet_since = Instant::now().checked_sub(CAMERA_WAIT * 2);
+        saver.render(&mut pixels);
+        assert!(message_shown(&pixels), "camera");
+    }
+
+    #[test]
+    fn scenes_cycle_back_to_the_first() {
+        // From the last scene (speakers) back to the first (no audio capture starts).
+        let mut saver = saver();
+        saver.mode = SCENES.len() - 1;
+        saver.next_scene();
+        assert_eq!(saver.mode, 0);
+        assert_eq!(saver.scene(), Scene::Plasma);
+    }
+
+    #[test]
     fn every_scene_renders_a_full_bar_frame() {
         let mut saver = saver();
         let mut pixels = vec![0_u8; 2170 * 60 * 4];
         for scene in SCENES {
-            saver.full_frame = true;
             saver.mode = SCENES.iter().position(|s| *s == scene).unwrap();
             assert_eq!(saver.render(&mut pixels), [], "{}", scene.name());
             assert!(
@@ -1093,43 +1047,6 @@ mod tests {
                     .any(|pixel| pixel[..3] != [0, 0, 0])
             );
         }
-    }
-
-    #[test]
-    fn button_scenes_damage_only_their_plates_after_the_first_frame() {
-        let mut saver = saver();
-        saver.mode = 5; // 2 buttons
-        let mut pixels = vec![0_u8; 2170 * 60 * 4];
-        assert_eq!(saver.render(&mut pixels), []);
-        let damage = saver.render(&mut pixels);
-        assert_eq!(
-            damage
-                .iter()
-                .map(|rect| (rect.x, rect.width))
-                .collect::<Vec<_>>(),
-            [(194, 182), (384, 182)]
-        );
-    }
-
-    #[test]
-    fn camera_button_damages_only_its_plate_and_is_grey_without_a_picture() {
-        let mut saver = saver();
-        saver.mode = SCENES
-            .iter()
-            .position(|scene| *scene == Scene::Camera(CameraView::Button))
-            .unwrap();
-        let mut pixels = vec![0_u8; 2170 * 60 * 4];
-        assert_eq!(saver.render(&mut pixels), []);
-        let damage = saver.render(&mut pixels);
-        assert_eq!(
-            damage
-                .iter()
-                .map(|rect| (rect.x, rect.width))
-                .collect::<Vec<_>>(),
-            [(194, 182)]
-        );
-        let middle = (30 * 2170 + 194 + 91) * 4;
-        assert_eq!(pixels[middle..middle + 3], [53, 53, 53]);
     }
 
     #[test]
@@ -1145,22 +1062,5 @@ mod tests {
             })
             .collect();
         assert_eq!(counts, [2, 3, 1, 2]);
-    }
-
-    #[test]
-    fn sweep_covers_every_non_audio_scene_at_every_buffer_count() {
-        let mut saver = saver();
-        saver.mode = SWEEP_MODE - 1;
-        saver.next_scene();
-        let steps = &saver.sweep.as_ref().expect("sweep").steps;
-        assert_eq!(steps.len(), 7 * 3);
-        assert!(
-            steps
-                .iter()
-                .all(|&(scene, _)| !matches!(SCENES[scene], Scene::Spectrum(_) | Scene::Camera(_)))
-        );
-        saver.next_scene();
-        assert!(saver.sweep.is_none());
-        assert_eq!(saver.mode, 0);
     }
 }

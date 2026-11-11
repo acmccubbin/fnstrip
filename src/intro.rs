@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use crate::wordmark::WORDMARK;
 
-pub(crate) const DURATION: Duration = Duration::from_millis(1_800);
+pub const DURATION: Duration = Duration::from_millis(1_800);
 
 // The timeline, in seconds.
 /// The beams meet in the middle (and flash).
@@ -44,7 +44,7 @@ const HALO_PAD: usize = 12;
 /// The reveal's soft edge, in pixels.
 const REVEAL_FEATHER: f32 = 30.0;
 
-pub(crate) struct Intro {
+pub struct Intro {
     width: usize,
     height: usize,
     /// The wordmark blurred, `HALO_PAD` wider on every side, 0–1.
@@ -56,7 +56,8 @@ pub(crate) struct Intro {
 }
 
 impl Intro {
-    pub(crate) fn new(width: u32, height: u32) -> Self {
+    #[must_use]
+    pub fn new(width: u32, height: u32) -> Self {
         Self {
             width: width as usize,
             height: height as usize,
@@ -90,7 +91,7 @@ impl Intro {
     }
 
     /// Draws the frame `elapsed` into the animation over the stock frame in `pixels`.
-    pub(crate) fn draw_at(&self, pixels: &mut [u8], elapsed: Duration) {
+    pub fn draw_at(&self, pixels: &mut [u8], elapsed: Duration) {
         let (width, height) = (self.width, self.height);
         if pixels.len() < width * height * 4 || width == 0 || height == 0 {
             return;

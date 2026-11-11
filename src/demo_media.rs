@@ -12,12 +12,11 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::extras::draw_mic_spectrum;
 use crate::framebuffer::Xrgb8888Frame;
 use crate::intro::{self, Intro};
-use crate::live::Spectrum;
 use crate::meters::Meter;
 use crate::screensaver::Screensaver;
+use crate::spectrum::{Spectrum, draw_mic_spectrum};
 use crate::stock_slice::{ExtraIcon, Layer, StockBar, StockCapabilities, StockLevels};
 use crate::theme::{FaceTint, Theme};
 

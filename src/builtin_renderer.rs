@@ -1591,11 +1591,8 @@ impl RendererSession {
             self.dirty = true;
         }
         if let Some(saver) = self.screensaver.as_mut() {
-            let sweep_finished = saver.tick();
+            saver.tick();
             self.dirty = true;
-            if sweep_finished {
-                self.stop_screensaver();
-            }
         }
         if !self.display_off
             && !self.input.wait_for_touch_release

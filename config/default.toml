@@ -27,7 +27,7 @@
 # temperature_unit = "c" (default) or "f": the temperature meter in °C or °F. Also above the
 #               first [[extras]].
 #
-# theme = "default", "mono", "pastel" or "rainbow": the colours of the whole bar, meters
+# theme = "default", "pastel", "mono" or "rainbow": the colours of the whole bar, meters
 #               and spectra included (mono is grey throughout, the camera too; pastel and
 #               rainbow give every button its own colour). Also above the first [[extras]].
 #

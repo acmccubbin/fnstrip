@@ -135,7 +135,7 @@ struct Counters {
     total: u64,
 }
 
-pub(crate) struct Meter {
+pub struct Meter {
     kind: Kind,
     /// Network: only this interface; `None`: every interface of a device that is up.
     interface: Option<String>,
@@ -181,7 +181,8 @@ fn fan_range(fans: &[Fan]) -> (f64, f64) {
 impl Meter {
     /// A meter for this button, or `None` if the icon isn't one (the VPN graphs its
     /// interface). `width` is the plate width in pixels.
-    pub(crate) fn new(icon: ExtraIcon, interface: Option<&str>, width: usize) -> Option<Self> {
+    #[must_use]
+    pub fn new(icon: ExtraIcon, interface: Option<&str>, width: usize) -> Option<Self> {
         let (kind, interface, vpn) = match icon {
             ExtraIcon::Cpu => (Kind::Cpu, None, false),
             ExtraIcon::Memory => (Kind::Memory, None, false),
@@ -235,7 +236,7 @@ impl Meter {
 
     /// Temperature meters print °F instead of °C.
     #[must_use]
-    pub(crate) const fn in_fahrenheit(mut self, fahrenheit: bool) -> Self {
+    pub const fn in_fahrenheit(mut self, fahrenheit: bool) -> Self {
         self.fahrenheit = fahrenheit;
         self
     }
@@ -309,9 +310,11 @@ impl Meter {
         self.rescale();
     }
 
-    /// Adds a made-up sample, for the documentation's pictures.
-    #[cfg(test)]
-    pub(crate) fn push_sample(&mut self, sample: [f64; 2]) {
+    /// Adds a sample in the meter's own units, as reading the hardware would: CPU and memory
+    /// as fractions (user, system; used, cache), disk and network in bytes per second (read
+    /// or received, then written or sent), fans in rpm (first, second), battery as its charge
+    /// (0 to 1, then 0), temperature with [`Meter::push_celsius`]. For pictures and the page.
+    pub fn push_sample(&mut self, sample: [f64; 2]) {
         if self.history.len() == self.capacity {
             self.history.pop_front();
         }
@@ -322,6 +325,42 @@ impl Meter {
     /// Made-up hardware, for the documentation's pictures: a battery at `level` on power
     /// with `hours` to full, a sensor with the default critical limit, and two fans with
     /// the ranges of the 2016 laptop it was tested on.
+    /// A temperature sample in °C, against the sensor's critical limit (the default limit
+    /// until one is known).
+    pub fn push_celsius(&mut self, celsius: f64) {
+        let critical = self
+            .sensor
+            .as_ref()
+            .map_or(DEFAULT_CRITICAL, |sensor| sensor.1);
+        let hot = critical - HOT_BELOW_CRITICAL;
+        self.push_sample([
+            celsius.min(hot).max(0.0) / critical,
+            (celsius - hot).max(0.0) / critical,
+        ]);
+    }
+
+    /// The battery's state, for its colours, icon and time: charge 0 to 1, on power, and
+    /// hours to empty or full if known.
+    pub const fn set_battery(&mut self, level: f64, powered: bool, hours: Option<f64>) {
+        self.battery = Some(Battery {
+            level,
+            powered,
+            hours,
+        });
+    }
+
+    /// The fans' ranges in rpm (first, second), which set the fan graph's scale.
+    pub fn set_fan_ranges(&mut self, ranges: &[(f64, f64)]) {
+        self.fans = ranges
+            .iter()
+            .map(|&(min, max)| Fan {
+                input: PathBuf::new(),
+                min,
+                max,
+            })
+            .collect();
+    }
+
     #[cfg(test)]
     pub(crate) fn pretend_hardware(&mut self, level: f64, hours: f64) {
         self.battery = Some(Battery {
@@ -360,12 +399,7 @@ impl Meter {
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
     )]
-    pub(crate) fn draw<'a>(
-        &self,
-        rows: impl Iterator<Item = &'a mut [u8]>,
-        width: usize,
-        height: usize,
-    ) {
+    pub fn draw<'a>(&self, rows: impl Iterator<Item = &'a mut [u8]>, width: usize, height: usize) {
         let mut rows: Vec<&mut [u8]> = rows.collect();
         if self.kind == Kind::Fan {
             self.draw_fan_lines(&mut rows, width, height);
@@ -412,7 +446,8 @@ impl Meter {
 
     /// Battery: the charge in quarters (0 to 4), rounded, for the icon's bars.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    pub(crate) fn battery_bars(&self) -> Option<u8> {
+    #[must_use]
+    pub fn battery_bars(&self) -> Option<u8> {
         self.battery
             .map(|battery| (battery.level * 4.0).round().clamp(0.0, 4.0) as u8)
     }
@@ -464,17 +499,29 @@ impl Meter {
         }
     }
 
-    /// Its colours, in the theme's tint.
+    /// Its colours, in the theme's tint, except warnings, which keep their colour in every
+    /// theme: a low or critical battery (amber, red) and a temperature near critical (red).
     fn palette(&self) -> Palette {
         let Palette(colours) = match self.battery {
             Some(battery) if self.kind == Kind::Battery => battery.palette(),
             _ => self.kind.palette(self.vpn),
         };
-        Palette(colours.map(|colour| self.tint.apply(colour)))
+        let low_battery = self.kind == Kind::Battery
+            && self
+                .battery
+                .is_some_and(|battery| !battery.powered && battery.level <= BATTERY_LOW);
+        Palette(std::array::from_fn(|index| {
+            let warning = low_battery || (self.kind == Kind::Temperature && index == 2);
+            if warning {
+                colours[index]
+            } else {
+                self.tint.apply(colours[index])
+            }
+        }))
     }
 
     /// Colours it in the theme's tint from the next draw.
-    pub(crate) const fn set_tint(&mut self, tint: FaceTint) {
+    pub const fn set_tint(&mut self, tint: FaceTint) {
         self.tint = tint;
     }
 
@@ -1057,6 +1104,45 @@ mod tests {
         assert_eq!(fill(battery(0.5, false)), Kind::Battery.palette(false).0[1]);
         assert_eq!(fill(battery(0.2, false)), bgrx(240, 175, 50));
         assert_eq!(fill(battery(0.1, false)), bgrx(235, 75, 60));
+    }
+
+    #[test]
+    fn warnings_keep_their_colour_in_every_theme() {
+        let mut battery = Meter::new(ExtraIcon::Battery, None, 182).unwrap();
+        battery.set_tint(FaceTint::Grey);
+        battery.battery = Some(Battery {
+            level: 0.5,
+            powered: false,
+            hours: None,
+        });
+        let [_, fill, _] = battery.palette().0;
+        assert!(
+            fill[0] == fill[1] && fill[1] == fill[2],
+            "a normal battery goes grey"
+        );
+        battery.battery = Some(Battery {
+            level: 0.15,
+            powered: false,
+            hours: None,
+        });
+        assert_eq!(
+            battery.palette().0[1],
+            bgrx(240, 175, 50),
+            "a low battery stays amber"
+        );
+        let mut temperature = Meter::new(ExtraIcon::Temperature, None, 182).unwrap();
+        temperature.set_tint(FaceTint::Hue(200.0, 1.0));
+        let Palette([_, normal, hot]) = temperature.palette();
+        assert_ne!(
+            normal,
+            Kind::Temperature.palette(false).0[1],
+            "the normal part takes the hue"
+        );
+        assert_eq!(
+            hot,
+            Kind::Temperature.palette(false).0[2],
+            "near critical stays red"
+        );
     }
 
     #[test]

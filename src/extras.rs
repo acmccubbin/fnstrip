@@ -21,8 +21,9 @@ use std::time::{Duration, Instant};
 
 use crate::config::ExtraConfig;
 use crate::framebuffer::Rectangle;
-use crate::live::{AudioFeed, AudioSource, CameraPreview, Spectrum};
+use crate::live::{AudioFeed, AudioSource, CameraPreview};
 use crate::meters::{self, Meter};
+use crate::spectrum::{MIC_BAR_PITCH, MIC_INSET, Spectrum, draw_mic_spectrum};
 use crate::stock_slice::ExtraIcon;
 use crate::theme::{FaceTint, Theme};
 
@@ -32,17 +33,6 @@ const VISIBLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const FEED_RETRY: Duration = Duration::from_secs(1);
 /// How often the meters sample (each sample is a 2 px column, so ~23 s fit a plate).
 const METER_INTERVAL: Duration = Duration::from_millis(250);
-/// Mic spectrum bars: pitch and width in pixels, and the inset from the plate's ends.
-const MIC_BAR_PITCH: usize = 7;
-const MIC_BAR_WIDTH: usize = 5;
-const MIC_INSET: usize = 6;
-/// Mic face colours as XRGB8888 bytes (B, G, R, X): a darker shade of the lit plate's
-/// green, bars from that green (bottom) to pale green (top), and pale peak markers.
-const MIC_BACKGROUND: [u8; 4] = [30, 56, 16, 0];
-const MIC_BAR_BOTTOM: [f32; 3] = [92.0, 164.0, 58.0];
-const MIC_BAR_TOP: [f32; 3] = [170.0, 235.0, 150.0];
-const MIC_PEAK: [u8; 4] = [225, 255, 220, 0];
-
 enum Request {
     Visible(bool),
     Run(usize),
@@ -467,58 +457,5 @@ fn keep<T>(
         slot.feed = None;
         slot.feed = start();
         slot.started = Instant::now();
-    }
-}
-
-// Pixel maths is f32; the casts are of small in-range values.
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
-pub(crate) fn draw_mic_spectrum<'a>(
-    rows: impl Iterator<Item = &'a mut [u8]>,
-    spectrum: &Spectrum,
-    width: usize,
-    height: usize,
-    tint: FaceTint,
-) {
-    let background = tint.apply(MIC_BACKGROUND);
-    let peak_colour = tint.apply(MIC_PEAK);
-    let bars = spectrum.levels.len();
-    let first = (width - bars * MIC_BAR_PITCH) / 2 + (MIC_BAR_PITCH - MIC_BAR_WIDTH) / 2;
-    let full = height as f32;
-    for (y, row) in rows.enumerate() {
-        let from_bottom = (height - y) as f32;
-        let shade = from_bottom / full;
-        let bar_colour = std::array::from_fn::<f32, 3, _>(|channel| {
-            MIC_BAR_BOTTOM[channel] + (MIC_BAR_TOP[channel] - MIC_BAR_BOTTOM[channel]) * shade
-        });
-        let bar_colour = tint.apply([
-            bar_colour[0] as u8,
-            bar_colour[1] as u8,
-            bar_colour[2] as u8,
-            0,
-        ]);
-        for pixel in row.as_chunks_mut::<4>().0 {
-            *pixel = background;
-        }
-        for (bar, (&level, &peak)) in spectrum.levels.iter().zip(&spectrum.peaks).enumerate() {
-            let peak_row = (peak * full).round();
-            let colour = if (from_bottom - peak_row).abs() < 1.0 && peak > 0.02 {
-                peak_colour
-            } else if from_bottom <= level * full {
-                bar_colour
-            } else {
-                continue;
-            };
-            let left = first + bar * MIC_BAR_PITCH;
-            for pixel in row[left * 4..(left + MIC_BAR_WIDTH) * 4]
-                .as_chunks_mut::<4>()
-                .0
-            {
-                *pixel = colour;
-            }
-        }
     }
 }
