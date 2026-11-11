@@ -187,6 +187,14 @@
         <button id="pick-all" class="chip" type="button">All ten</button>
         <button id="pick-none" class="chip" type="button">Clear</button>
       </div>
+      <details class="colors" id="colors">
+        <summary>Fine-tune colours <span class="muted" id="colors-count">as the theme</span></summary>
+        <p class="muted">Change any colour on top of the theme; the bar above and the preview below
+          follow, and the config gets a <code>[colors]</code> section. On pastel and rainbow, button
+          colours set the brightness and each button keeps its own hue.
+          <button id="colors-reset" class="chip" type="button" hidden>Back to the theme</button></p>
+        <div class="color-grid" id="color-grid"></div>
+      </details>
       <figure class="strip">
         <div class="bezel"><canvas id="preview" width="2170" height="60" role="img" aria-label="Your extras row"></canvas></div>
         <figcaption>Your extras row, as the bar will draw it. Drag a button along it to move it.</figcaption>

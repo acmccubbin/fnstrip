@@ -31,9 +31,20 @@
   const same = (c) => c;
   let tint = same; // how the live face being drawn is recoloured (Theme::face_tint)
 
-  function applyTheme(name) {
+  // The builder's [colors] overrides, by config key, as [r, g, b]; on top of any theme.
+  const COLOR_KEYS = {
+    background: 'background', plate: 'plate', pressed: 'pressed', label: 'label', dim: 'dim',
+    lit: 'lit', lit_pressed: 'litPressed', fill: 'fill', muted: 'muted',
+  };
+  const overrides = {};
+
+  /** Theme `name`, with the builder's colour overrides unless `plain` (the gallery). */
+  function applyTheme(name, plain = false) {
     themeName = THEMES[name] ? name : 'default';
-    theme = THEMES[themeName];
+    theme = { ...THEMES[themeName] };
+    if (!plain) {
+      for (const [key, value] of Object.entries(overrides)) theme[COLOR_KEYS[key]] = value;
+    }
     const c = (v) => rgb(v[0], v[1], v[2]);
     Object.assign(COLOR, {
       background: c(theme.background), plate: c(theme.plate), pressed: c(theme.pressed),
@@ -1740,6 +1751,66 @@
   startup.addEventListener('change', rebuild);
   debugGestures.addEventListener('change', rebuild);
 
+  // ---- Fine-tune colours: [colors] overrides on top of the theme -----------------------------
+
+  const toHex = (c) => `#${c.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+  const fromHex = (hex) => [1, 3, 5].map((at) => parseInt(hex.slice(at, at + 2), 16));
+  const COLOR_INFO = {
+    background: 'Behind the buttons',
+    plate: 'Buttons and sliders',
+    pressed: 'A button while touched',
+    label: 'Icons, text, percentages',
+    dim: 'Muted or off icons',
+    lit: 'Buttons that are on',
+    lit_pressed: 'An "on" button while touched',
+    fill: 'Slider levels',
+    muted: 'The volume level while muted',
+  };
+  const colorGrid = document.getElementById('color-grid');
+  const pickers = {};
+  for (const [key, what] of Object.entries(COLOR_INFO)) {
+    const row = document.createElement('div');
+    row.className = 'color-row';
+    const input = Object.assign(document.createElement('input'), { type: 'color', id: `color-${key}` });
+    const label = document.createElement('label');
+    label.htmlFor = input.id;
+    label.innerHTML = `<code>${key}</code><span>${what}</span>`;
+    const reset = Object.assign(document.createElement('button'), { type: 'button', className: 'color-reset', textContent: 'reset' });
+    reset.title = `Back to the ${key} colour of the theme`;
+    input.addEventListener('input', () => {
+      overrides[key] = fromHex(input.value);
+      applyTheme(themeName);
+      syncColorPickers();
+      rebuild();
+    });
+    reset.addEventListener('click', () => {
+      delete overrides[key];
+      applyTheme(themeName);
+      syncColorPickers();
+      rebuild();
+    });
+    row.append(input, label, reset);
+    colorGrid.append(row);
+    pickers[key] = { input, reset, row };
+  }
+  document.getElementById('colors-reset').addEventListener('click', () => {
+    for (const key of Object.keys(overrides)) delete overrides[key];
+    applyTheme(themeName);
+    syncColorPickers();
+    rebuild();
+  });
+  /** Each picker shows the colour in use; changed ones are marked and can go back. */
+  function syncColorPickers() {
+    for (const [key, { input, reset, row }] of Object.entries(pickers)) {
+      input.value = toHex(theme[COLOR_KEYS[key]]);
+      reset.hidden = !overrides[key];
+      row.classList.toggle('changed', Boolean(overrides[key]));
+    }
+    const count = Object.keys(overrides).length;
+    document.getElementById('colors-count').textContent = count ? `${count} changed` : 'as the theme';
+    document.getElementById('colors-reset').hidden = count === 0;
+  }
+
   // Theme pickers: chips under the bar and the builder's select, kept in step.
   const themeSelect = document.getElementById('theme');
   const skins = document.getElementById('skins');
@@ -1783,7 +1854,7 @@
     state.lit.vpn = true;
     try {
       for (const [name, item] of Object.entries(gallery)) {
-        applyTheme(name);
+        applyTheme(name, true);
         const [controls, extras] = item.querySelectorAll('canvas');
         ctx = controls.getContext('2d');
         drawRow(CONTROLS);
@@ -1807,6 +1878,7 @@
 
   function setTheme(name, announce = false) {
     applyTheme(name);
+    syncColorPickers();
     themeSelect.value = themeName;
     for (const [n, chip] of Object.entries(chips)) chip.setAttribute('aria-pressed', String(n === themeName));
     for (const [n, item] of Object.entries(gallery)) item.classList.toggle('active', n === themeName);
@@ -1840,6 +1912,11 @@
       `temperature_unit = "${fahrenheit ? 'f' : 'c'}"`,
       `debug_gestures = "${debugGestures.checked ? 'on' : 'off'}"   # fn triple-tap-and-hold: test screen; quad-tap: next theme`,
     ];
+    const changed = Object.keys(COLOR_KEYS).filter((key) => overrides[key]);
+    if (changed.length) {
+      lines.push('', `# Colours changed on top of the ${themeName} theme.`, '[colors]');
+      for (const key of changed) lines.push(`${key} = "${toHex(overrides[key])}"`);
+    }
     for (const name of chosen) {
       const info = EXTRA_INFO[name];
       lines.push('', '[[extras]]');
