@@ -525,8 +525,10 @@ h1 .grad { white-space: nowrap; }
 .theme-strip:focus-visible { outline: none; }
 
 /* Install steps */
-.steps { counter-reset: step; list-style: none; margin: 0 0 24px; padding: 0; display: grid; gap: 26px; }
-.steps > li { counter-increment: step; position: relative; padding-left: 52px; max-width: 900px; }
+/* minmax(0, …) and min-width: 0 let long commands scroll inside their box instead of
+   stretching the page on phones. */
+.steps { counter-reset: step; list-style: none; margin: 0 0 24px; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 26px; }
+.steps > li { counter-increment: step; position: relative; padding-left: 52px; max-width: 900px; min-width: 0; }
 .steps > li::before {
   content: counter(step);
   position: absolute;

@@ -21,6 +21,7 @@ notes here say so.
 ### Fixed
 
 - Project page: meter values keep their black outline over busy graphs.
+- Project page: on phones, the install commands no longer make the page wider than the screen.
 
 ## [0.1.0] - 2026-11-11
 
