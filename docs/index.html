@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fnstrip: your own Touch Bar on Linux</title>
+<meta name="description" content="A customizable Touch Bar renderer for 2016-2017 (T1) MacBook Pros running Linux with T1Bridge: your own buttons and commands, live meters, the camera and mic on the strip.">
+<meta name="color-scheme" content="dark">
+<!-- The source repository's URL, once public (GitHub Pages works it out by itself). -->
+<meta name="fnstrip-repo" content="">
+<link rel="stylesheet" href="site/style.css">
+</head>
+<body>
+<div id="dim" aria-hidden="true"></div>
+
+<header class="top">
+  <a class="brand" href="#">fn<span>strip</span></a>
+  <nav>
+    <a href="#rows">See it</a>
+    <a href="#themes">Themes</a>
+    <a href="#configure">Make it yours</a>
+    <a href="#install">Install</a>
+    <a href="#docs">Docs</a>
+    <a href="#faq">FAQ</a>
+    <a id="repo" class="repo" href="#install" hidden>GitHub</a>
+  </nav>
+</header>
+
+<main>
+  <section class="hero">
+    <p class="eyebrow">For 2016&ndash;2017 MacBook Pros running Linux</p>
+    <h1>Your Touch Bar,<br class="phone-break"> <span class="grad">your buttons.</span></h1>
+    <p class="lede">
+      fnstrip is a Touch Bar renderer for T1 MacBook Pros on
+      <a href="https://github.com/standardagents/t1bridge">T1Bridge</a>. It keeps Esc, the F-keys,
+      brightness, volume and media, and adds buttons that run your own commands, live meters,
+      and the camera and mic, right on the strip.
+    </p>
+
+    <ul class="badges">
+      <li>Free &amp; MIT licensed</li><li>Runs as you, no root</li><li>Undo in two commands</li><li>Touch ID untouched</li>
+    </ul>
+    <div class="deck" id="deck">
+      <div class="bezel">
+        <canvas id="bar" width="2170" height="60" role="img"
+          aria-label="An interactive copy of the fnstrip Touch Bar"></canvas>
+      </div>
+      <div class="keys">
+        <button id="fn" class="key fn" type="button" aria-label="fn key: hold for F1 to F12, double-tap for the extras row">fn</button>
+        <div class="numrow" aria-hidden="true">
+          <span>~<br>`</span><span>!<br>1</span><span>@<br>2</span><span>#<br>3</span><span>$<br>4</span><span>%<br>5</span><span>^<br>6</span><span>&amp;<br>7</span><span>*<br>8</span><span>(<br>9</span><span>)<br>0</span><span>_<br>-</span><span>+<br>=</span><span class="wide">delete</span>
+        </div>
+      </div>
+      <div class="minimap" id="scrub" hidden>
+        <canvas id="mini" width="723" height="20" aria-hidden="true"></canvas>
+        <div class="rail" aria-hidden="true"><span class="thumb" id="thumb"></span></div>
+        <p><span aria-hidden="true">&lsaquo;</span> Slide here to look along the whole strip <span aria-hidden="true">&rsaquo;</span></p>
+      </div>
+      <p id="said" class="said" aria-live="polite">&nbsp;</p>
+      <div class="skins" id="skins" role="group" aria-label="Theme"><span class="muted">Theme</span></div>
+    </div>
+    <p class="phone-note">Best on a computer screen (or, of course, the laptop with the Touch Bar):
+      the real bar is 36 times wider than it is tall.</p>
+
+    <ul class="hints">
+      <li><b>Drag a slider.</b> Brightness really dims this page; the keyboard one lights the keys. Tap the speaker or keyboard icon to switch them off and on.</li>
+      <li><b>Hold fn</b> (or <kbd>F</kbd> on your keyboard) for Esc and F1&ndash;F12.</li>
+      <li><b>Tap play</b> for a little tune: the button lights up with its spectrum, as it does on the bar for any player. Previous and next change the track.</li>
+      <li><b>Double-tap fn</b> for your own buttons. Tap the camera or the mic.</li>
+      <li><b>Pick a theme</b> under the bar, then double-tap fn to see it on the meters too.</li>
+      <li><b>Debug gestures:</b> triple-tap fn and hold for the test screen, quad-tap fn for the next theme. On the bar, they're off until you turn them on.</li>
+    </ul>
+    <p class="fine">
+      <button id="replay" class="link" type="button">Replay the startup animation</button>
+      &middot; Drawn live in your browser with the renderer's own icons. The meters show sample
+      data here (the battery is real where your browser shares it). Camera and mic stay in this tab.
+    </p>
+  </section>
+
+  <section id="rows" class="rows">
+    <h2>One strip, three rows</h2>
+    <p class="intro-text">Recorded from the renderer's own drawing code, at the bar's own shape.</p>
+    <figure class="strip">
+      <div class="bezel"><img src="media/strip/sliders.gif" width="2170" height="60" alt="Dragging the brightness, keyboard and volume sliders, and tapping the speaker to mute" loading="lazy"></div>
+      <figcaption><b>Controls.</b> Esc, sliders for display brightness, keyboard backlight and
+        volume that follow your finger, and media keys. Tap the speaker to mute, or the
+        keyboard icon to turn the backlight off and on.</figcaption>
+    </figure>
+    <figure class="strip">
+      <div class="bezel"><img src="media/strip/rows.gif" width="2170" height="60" alt="The controls, F-keys and extras rows in turn" loading="lazy"></div>
+      <figcaption><b>F-keys.</b> Esc and F1&ndash;F12 while Fn is held. Prefer the F-keys
+        first? Swap the rows with one setting.</figcaption>
+    </figure>
+    <figure class="strip">
+      <div class="bezel"><img src="media/strip/extras.gif" width="2170" height="60" alt="The extras row: camera, mic and VPN toggles, then CPU, temperature, fans, memory, disk, network and battery meters" loading="lazy"></div>
+      <figcaption><b>Extras.</b> Double-tap Fn; it stays until the next Fn press. Your own
+        toggles (lit while they're on), and live CPU, temperature, fan, memory, disk, network
+        and battery graphs. A lit camera shows its picture, a lit mic a spectrum, a lit VPN
+        its traffic. <span class="muted">(Sample data.)</span></figcaption>
+    </figure>
+    <figure class="strip">
+      <div class="bezel"><img src="media/strip/intro.gif" width="2170" height="60" alt="The startup animation: beams, a flash and the fnstrip wordmark" loading="lazy"></div>
+      <figcaption><b>A proper hello.</b> A short light show when the renderer starts. A touch
+        or Fn skips it, and <code>startup_animation = "off"</code> turns it off.</figcaption>
+    </figure>
+    <figure class="strip">
+      <div class="bezel"><img src="media/strip/test-screen.gif" width="2170" height="60" alt="The test screen's animations with frame-rate stats" loading="lazy"></div>
+      <figcaption><b>Test screen.</b> Triple-tap Fn and hold, with <code>debug_gestures = "on"</code>:
+        full-colour animations with frame rate, render time and CPU, plus live audio spectra and the
+        camera. Quad-tap Fn steps through the themes.</figcaption>
+    </figure>
+  </section>
+
+  <section id="features">
+    <h2>What's on the strip</h2>
+    <div class="cards">
+      <article><h3>The keys you had</h3><p>Esc, F1&ndash;F12 on <kbd>fn</kbd>, media keys. Nothing lost from T1Bridge's own bar.</p></article>
+      <article><h3>Sliders that follow you</h3><p>Brightness, keyboard light and volume show their level and track your finger. Tap the icons to mute or turn the keyboard light off.</p></article>
+      <article><h3>Your own buttons</h3><p>Any command, one tap away, lit while it's on: VPN, do-not-disturb, a dev server, a backup.</p></article>
+      <article><h3>Live meters</h3><p>CPU, temperature, fans, memory, disk, network and battery, with their history already there when you look.</p></article>
+      <article><h3>Music you can see</h3><p>Play/pause lights up while something plays, with a live spectrum of what you're hearing.</p></article>
+      <article><h3>Camera and mic</h3><p>See your camera's picture and your mic's sound on their buttons, so you know at a glance when they're live.</p></article>
+      <article><h3>Themes</h3><p>Default, mono, pastel or rainbow, across the whole bar, meters included. Any colour can be changed on top.</p></article>
+      <article><h3>Safe to try</h3><p>A bad config falls back to the default; if fnstrip stops, T1Bridge's own bar comes back.</p></article>
+    </div>
+  </section>
+
+  <section id="themes">
+    <h2>Wear it your way</h2>
+    <p class="intro-text">Four themes, each across the whole bar: buttons, sliders, meters and spectra. Drawn here by
+      the same code as the bar above; click one to try it up there.</p>
+    <div class="theme-strips" id="theme-strips"></div>
+    <div class="split">
+      <div>
+        <p>One line picks a theme. Mono is greys all the way across, camera included; pastel and rainbow give every button its own colour, and its meter follows it.</p>
+        <p>A <code>[colors]</code> section changes any single colour on top: your own "on" colour, a different background, your team's colours.</p>
+        <p class="muted">Colours: <code>background</code>, <code>plate</code>, <code>pressed</code>, <code>label</code>, <code>dim</code>, <code>lit</code>, <code>lit_pressed</code>, <code>fill</code>, <code>muted</code>.</p>
+      </div>
+      <pre class="code small"><code><span class="k">theme</span> = <span class="s">"mono"</span>
+
+<span class="h">[colors]</span>
+<span class="k">lit</span>   = <span class="s">"#c0392b"</span>   <span class="c"># "on" buttons in red</span>
+<span class="k">label</span> = <span class="s">"#f5e6c8"</span>   <span class="c"># warm white labels</span></code></pre>
+    </div>
+  </section>
+
+  <section id="configure" class="build">
+    <h2>Make it yours</h2>
+    <div class="build-phone">
+      <p>
+        The builder is made for the computer with the Touch Bar: pick your buttons there,
+        download the config, and drop it straight into <code>~/.config/fnstrip/</code>. On a
+        phone it's cramped, and the file would land on the wrong machine anyway.
+      </p>
+      <button id="build-open" class="chip" type="button" aria-controls="build-body" aria-expanded="false">Show it anyway</button>
+    </div>
+    <div class="build-body" id="build-body">
+      <p class="build-tip">Best done on the laptop with the Touch Bar: build your row here,
+        download the config, and drop it into place.</p>
+      <p class="intro-text">
+        T1Bridge's own bar covers the keys, sliders and media, but it can't run <em>your</em>
+        commands: its desktop-provider contract has no action for that. fnstrip can. Pick the
+        buttons for your extras row below, then drag them along your row (or use
+        <b>&lsaquo; &rsaquo;</b>) to put them in order. Toggles fill in from the left after Esc and
+        meters from the right end, as on the bar. Your row goes live on the
+        bar above (double-tap fn), and the config is ready to copy or download: save it as
+        <code>~/.config/fnstrip/config.toml</code> and restart the service.
+      </p>
+      <div class="palette" id="palette"></div>
+      <div class="build-bar">
+        <span id="picked" class="muted"></span>
+        <label class="setting">With fn up
+          <select id="default-row">
+            <option value="controls">controls</option>
+            <option value="function">F-keys</option>
+          </select>
+        </label>
+        <label class="setting">Theme <select id="theme"></select></label>
+        <label class="setting">Temperature
+          <select id="temperature-unit">
+            <option value="c">°C</option>
+            <option value="f">°F</option>
+          </select>
+        </label>
+        <label class="setting"><input id="startup" type="checkbox" checked> Startup animation</label>
+        <label class="setting" title="fn triple-tap-and-hold: test screen; fn quad-tap: next theme"><input id="debug-gestures" type="checkbox"> Debug gestures</label>
+        <button id="pick-all" class="chip" type="button">All ten</button>
+        <button id="pick-none" class="chip" type="button">Clear</button>
+      </div>
+      <figure class="strip">
+        <div class="bezel"><canvas id="preview" width="2170" height="60" role="img" aria-label="Your extras row"></canvas></div>
+        <figcaption>Your extras row, as the bar will draw it. Drag a button along it to move it.</figcaption>
+      </figure>
+      <div class="split">
+        <div>
+          <h3>Or make your own</h3>
+          <p>
+            A toggle is just an icon, a command to run when tapped, and an optional status
+            command that lights it while it's on. So any toggle icon can drive anything you can
+            run from a shell: do-not-disturb, keep-awake, night light, a backup, a dev server.
+          </p>
+          <pre class="code small"><code><span class="h">[[extras]]</span>
+  <span class="k">icon</span>    = <span class="s">"mic"</span>   <span class="c"># any toggle icon</span>
+  <span class="k">command</span> = <span class="s">"makoctl mode -t do-not-disturb"</span>
+  <span class="k">status</span>  = <span class="s">"makoctl mode | grep -q do-not-disturb"</span></code></pre>
+          <p class="muted">
+            Commands run with <code>sh -c</code> as you, so treat the file like a shell script.
+            For now the icons come from this set; the command can be anything. A broken config
+            falls back to the built-in default, and if fnstrip ever exits, T1Bridge's own bar
+            comes back.
+          </p>
+        </div>
+        <div>
+          <div class="code-head"><span>~/.config/fnstrip/config.toml</span><span class="actions"><button id="copy" class="chip" type="button">Copy</button><button id="download" class="chip primary" type="button">Download</button></span></div>
+          <pre class="code generated" id="config" aria-live="polite"></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="install">
+    <h2>Install</h2>
+    <p class="intro-text">Four steps, about five minutes once T1Bridge works. Nothing runs as root, and every step can be undone.</p>
+    <ol class="steps">
+      <li>
+        <h3>Get T1Bridge working</h3>
+        <p>fnstrip draws the bar; <a href="https://github.com/standardagents/t1bridge">T1Bridge</a> talks to the hardware. Install it first and check its own bar shows up.</p>
+        <p class="muted">You also need Rust 1.88 or newer to build, and optionally <code>brightnessctl</code> (brightness sliders), PipeWire tools (mic and speaker spectra) and <code>ffmpeg</code> (camera).</p>
+      </li>
+      <li>
+        <h3>Build it and point T1Bridge at it</h3>
+        <p class="repo-clone">Get the source, then, in it:</p>
+        <div class="code-head"><span>terminal</span><span class="actions"><button class="chip copy-code" type="button">Copy</button></span></div>
+        <pre class="code"><code>cargo build --release
+install -Dm755 target/release/fnstrip ~/.local/bin/fnstrip
+mkdir -p ~/.config/t1bridge
+ln -sfn ~/.local/bin/fnstrip ~/.config/t1bridge/renderer
+systemctl --user restart t1-touchbar.service</code></pre>
+        <p class="muted">The link is T1Bridge's documented way to choose a renderer. fnstrip runs as you, as an ordinary process.</p>
+      </li>
+      <li>
+        <h3>Volume and media <span class="opt">optional</span></h3>
+        <p>The volume slider, mute and media keys go through a T1Bridge <em>desktop provider</em>. If your desktop doesn't have one, use the small one that comes with fnstrip (it needs <code>wpctl</code> and <code>busctl</code>):</p>
+        <div class="code-head"><span>terminal</span><span class="actions"><button class="chip copy-code" type="button">Copy</button></span></div>
+        <pre class="code"><code>install -Dm755 contrib/desktop-provider/fnstrip-desktop-provider ~/.local/bin/
+mkdir -p ~/.config/systemd/user/t1-touchbar.service.d
+printf '[Service]\nEnvironment=T1BRIDGE_DESKTOP_PROVIDER=%%h/.local/bin/fnstrip-desktop-provider\n' \
+  &gt; ~/.config/systemd/user/t1-touchbar.service.d/fnstrip-provider.conf
+systemctl --user daemon-reload
+systemctl --user restart t1-touchbar.service</code></pre>
+      </li>
+      <li>
+        <h3>Make it yours <span class="opt">optional</span></h3>
+        <p>Without a config you get the controls, the F-keys and an empty extras row. Build one with <a href="#configure">the builder</a> above, or start from <code>config/default.toml</code>, which explains every setting. Save it as <code>~/.config/fnstrip/config.toml</code> and restart the service.</p>
+      </li>
+    </ol>
+    <div class="callout">
+      <b>Changed your mind?</b> Two commands give you T1Bridge's own bar back:
+      <code>rm ~/.config/t1bridge/renderer</code> and
+      <code>systemctl --user restart t1-touchbar.service</code>.
+      If fnstrip ever fails to start or exits, T1Bridge falls back to its own bar by itself.
+    </div>
+  </section>
+
+  <section id="docs">
+    <h2>Reference</h2>
+    <p class="intro-text">Everything on one page. The same details live in the README and in <code>config/default.toml</code>.</p>
+
+    <h3>Touches and Fn</h3>
+    <div class="table-wrap"><table>
+      <tr><th>Do this</th><th>And</th></tr>
+      <tr><td>Tap a button</td><td>It does its thing: a key, a media command, or your own command.</td></tr>
+      <tr><td>Drag on a slider</td><td>The level follows your finger, anywhere along the slider.</td></tr>
+      <tr><td>Tap the speaker icon</td><td>Mute and unmute.</td></tr>
+      <tr><td>Tap the keyboard icon</td><td>Backlight off, then back on to the level it had.</td></tr>
+      <tr><td>Hold <kbd>fn</kbd></td><td>Esc and F1&ndash;F12 (or the controls, with <code>default_row = "function"</code>).</td></tr>
+      <tr><td>Double-tap <kbd>fn</kbd></td><td>Your extras row. It stays until the next <kbd>fn</kbd> press.</td></tr>
+      <tr><td>Triple-tap <kbd>fn</kbd> and hold</td><td>The test screen: animations with frame rate, render time and CPU. With <code>debug_gestures = "on"</code>.</td></tr>
+      <tr><td>Quad-tap <kbd>fn</kbd></td><td>The next theme, until fnstrip restarts. With <code>debug_gestures = "on"</code>.</td></tr>
+      <tr><td>Touch, or press <kbd>fn</kbd>, during the startup animation</td><td>Skips it.</td></tr>
+    </table></div>
+
+    <h3>The config file</h3>
+    <p class="muted">A small, strict subset of TOML at <code>~/.config/fnstrip/config.toml</code>. Values are quoted strings. A mistake is reported with its line number in <code>journalctl --user -u t1-touchbar.service</code>, and the bar carries on with the built-in default.</p>
+    <div class="table-wrap"><table>
+      <tr><th>Setting</th><th>Values</th><th>What it does</th></tr>
+      <tr><td><code>default_row</code></td><td><code>"controls"</code>, <code>"function"</code></td><td>The row shown with fn up; the other one shows while fn is held.</td></tr>
+      <tr><td><code>startup_animation</code></td><td><code>"on"</code>, <code>"off"</code></td><td>The light show when the renderer starts.</td></tr>
+      <tr><td><code>debug_gestures</code></td><td><code>"off"</code>, <code>"on"</code></td><td>Lets the test screen (triple-tap fn and hold) and theme switching (quad-tap fn) through. Off by default.</td></tr>
+      <tr><td><code>temperature_unit</code></td><td><code>"c"</code>, <code>"f"</code></td><td>The temperature meter in °C (the default) or °F.</td></tr>
+      <tr><td><code>theme</code></td><td><code>"default"</code>, <code>"mono"</code>, <code>"pastel"</code>, <code>"rainbow"</code></td><td>The colours of the whole bar, meters included.</td></tr>
+      <tr><td><code>[colors]</code></td><td><code>background</code>, <code>plate</code>, <code>pressed</code>, <code>label</code>, <code>dim</code>, <code>lit</code>, <code>lit_pressed</code>, <code>fill</code>, <code>muted</code> = <code>"#rrggbb"</code></td><td>Changes single colours of the theme.</td></tr>
+      <tr><td><code>[[extras]]</code></td><td>up to 10</td><td>One button of the extras row, with the keys below.</td></tr>
+      <tr><td>&emsp;<code>icon</code></td><td>toggles: <code>camera</code>, <code>mic</code>, <code>vpn</code>; meters: <code>cpu</code>, <code>mem</code>, <code>disk</code>, <code>net</code>, <code>battery</code>, <code>temp</code>, <code>fan</code></td><td>Toggles fill in from the left after Esc, meters from the right end.</td></tr>
+      <tr><td>&emsp;<code>command</code></td><td>a shell command</td><td>Runs with <code>sh -c</code> when tapped (optional for meters).</td></tr>
+      <tr><td>&emsp;<code>status</code></td><td>a shell command</td><td>Lights the button while it exits 0. Checked every second while the row shows, and after a tap.</td></tr>
+      <tr><td>&emsp;<code>interface</code></td><td>e.g. <code>"wg0"</code></td><td>For <code>vpn</code> and <code>net</code>: which network interface to graph.</td></tr>
+    </table></div>
+
+    <h3>When something's off</h3>
+    <div class="table-wrap"><table>
+      <tr><th>You see</th><th>Try</th></tr>
+      <tr><td>T1Bridge's own bar, not fnstrip</td><td>Check the link (<code>ls -l ~/.config/t1bridge/renderer</code>) and the log: <code>journalctl --user -u t1-touchbar.service -b</code>.</td></tr>
+      <tr><td>Your buttons are missing</td><td>The config has a mistake: the log names the line.</td></tr>
+      <tr><td>Volume or media do nothing</td><td>Set up a desktop provider (install step 3). Media keys need a player that supports MPRIS, which most do.</td></tr>
+      <tr><td>No brightness sliders</td><td>Install <code>brightnessctl</code>.</td></tr>
+      <tr><td>The camera button stays dark</td><td>It shows the picture from the webcam service in <code>contrib/t1-webcam</code>.</td></tr>
+      <tr><td>Something else</td><td>Create <code>$XDG_RUNTIME_DIR/fnstrip-record</code>: fnstrip then logs events and keeps every frame, so you can replay what happened.</td></tr>
+    </table></div>
+  </section>
+
+  <section id="light" class="split">
+    <div>
+      <h2>Light on your laptop</h2>
+      <p>The renderer only draws when something changes, and the meters read a few small files from <code>/proc</code> and <code>/sys</code> four times a second. They keep doing so in the background, so the extras row opens on full graphs, but only one plate's width of history is kept, in memory.</p>
+      <p>Whether music is playing comes from a single listener on the session bus that wakes only when a player changes state.</p>
+      <p class="muted">Measured on a 15&Prime; 2016 MacBook Pro with the screen on.</p>
+    </div>
+    <div><div class="table-wrap"><table>
+      <tr><th>Bar showing</th><th>CPU, one core</th></tr>
+      <tr><td>Controls, nothing playing</td><td>about 2%</td></tr>
+      <tr><td>Music playing, spectrum on play/pause</td><td>about 4%</td></tr>
+    </table></div>
+    <p class="muted small">Plus the desktop provider's once-a-second status check, which depends on the provider.</p></div>
+  </section>
+
+  <section id="privacy" class="split">
+    <div>
+      <h2>Your machine, your business</h2>
+      <p>fnstrip runs as you: no root, no setuid. Besides the commands in your config, it starts only <code>busctl</code>, <code>dbus-monitor</code>, <code>pw-record</code>, <code>ffmpeg</code>, <code>brightnessctl</code>, <code>systemctl</code> and <code>date</code>, each without a shell.</p>
+      <p>The mic and speaker spectra and the camera picture run only while their button is lit (or music plays). They're analysed in memory and never saved or sent anywhere.</p>
+      <p>Touch ID stays entirely T1Bridge's: fnstrip only reads its state file to draw the prompt.</p>
+    </div>
+    <div class="callout warn">
+      <b>Treat the config like a shell script.</b> Button commands run as you, so whoever can edit
+      <code>config.toml</code> can run commands as you. Read any config you didn't write before using it,
+      including one from this page once you've changed it.
+      <p class="muted small">This page: no cookies, no analytics, no trackers, fonts served from here. The camera and mic demos stay in your browser tab.</p>
+    </div>
+  </section>
+
+  <section id="faq">
+    <h2>Questions</h2>
+    <div class="faq">
+      <details><summary>Which Macs does it work on?</summary>
+        <p>MacBook Pros with a T1 chip and a Touch Bar: the 2016 and 2017 models (MacBookPro13,2, 13,3, 14,2 and 14,3), wherever T1Bridge runs. It's tested on a 15&Prime; 2016 so far; reports from the others are welcome.</p></details>
+      <details><summary>I have a T2 Intel Mac, or an M1 or M2 MacBook Pro.</summary>
+        <p>Those Touch Bars work differently. Use <a href="https://github.com/AsahiLinux/tiny-dfr">tiny-dfr</a>, from the Asahi Linux project: it covers the T2 models and the Apple Silicon MacBook Pros with a Touch Bar (the 13&Prime; M1 and M2; later Macs dropped it).</p></details>
+      <details><summary>Does it change how T1Bridge or Touch ID work?</summary>
+        <p>No. fnstrip replaces only the drawing part, through T1Bridge's documented renderer link. The hardware, the fingerprint sensor and its authentication stay T1Bridge's, and its own bar comes back the moment fnstrip stops.</p></details>
+      <details><summary>Can apps put their own buttons on the bar?</summary>
+        <p>Not on Linux: there's no system-wide way for apps to publish Touch Bar buttons, as there is on macOS. Instead, you choose the buttons, and each one can run any command, so it can drive any app that has a command line.</p></details>
+      <details><summary>Can I add my own icons?</summary>
+        <p>Not yet: the icons come from the set shown in the builder, but the commands behind them can be anything. Icons from files are an idea for later.</p></details>
+      <details><summary>Will it hurt my battery?</summary>
+        <p>Barely: about 2% of one core with the screen on and nothing playing. See <a href="#light">the numbers</a>.</p></details>
+      <details><summary>Something broke. What now?</summary>
+        <p>Remove the link and restart the service (above), and you're back on T1Bridge's bar. Then <a href="#docs">the reference</a> and the log usually say why.</p></details>
+    </div>
+  </section>
+
+  <section id="about" class="split">
+    <div>
+      <h2>Free, open, and honest about it</h2>
+      <p><b>MIT licensed</b>, free to use, change and share. The code, the icons it draws with, and the credits for everything it builds on are in the repository.</p>
+      <p><b>Built with AI, by a human.</b> fnstrip was written with substantial help from Claude, an AI coding assistant, under the direction of its author, who decided what it should do and tried it out on a real 2016 MacBook Pro. Every change is checked by automated tests too. AI made the code quick to write; it doesn't make it perfect. Read it, question it, and report what's wrong.</p>
+      <p><b>Status: beta.</b> Tested on one machine with T1Bridge v0.1.12. Expect rough edges, and tell us about them.</p>
+    </div>
+    <div>
+      <h3>Standing on</h3>
+      <ul class="credits">
+        <li><a href="https://github.com/standardagents/t1bridge">T1Bridge</a>: the T1 Touch Bar on Linux. fnstrip started as a copy of its renderer (MIT).</li>
+        <li><a href="https://github.com/AsahiLinux/tiny-dfr">tiny-dfr</a>: the Touch Bar on T2 and Apple Silicon Macs.</li>
+        <li>Icons: <a href="https://pub.dev/packages/cupertino_icons">Cupertino Icons</a> and <a href="https://github.com/praveenjuge/mynaui-icons">Myna UI</a> (MIT).</li>
+        <li>Fonts: <a href="https://github.com/rsms/inter">Inter</a>, <a href="https://gitlab.gnome.org/GNOME/adwaita-fonts">Adwaita Sans</a> and <a href="https://github.com/JetBrains/JetBrainsMono">JetBrains Mono</a> (SIL Open Font License).</li>
+      </ul>
+      <p class="muted small">Not affiliated with or endorsed by Apple or the T1Bridge project. &ldquo;Touch Bar&rdquo; is a trademark of Apple Inc.</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <p>
+    fnstrip &middot; MIT licensed &middot; written with Claude, under human direction and testing &middot;
+    <a href="#">back to the bar</a><span class="repo-foot" hidden> &middot; <a class="repo-link" href="#install">source on GitHub</a></span>
+  </p>
+</footer>
+
+<script src="site/sprites.js"></script>
+<script src="site/app.js"></script>
+</body>
+</html>
