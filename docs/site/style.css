@@ -306,6 +306,8 @@ button.link:hover { text-decoration: underline; }
 .kind.meter { background: rgba(0, 199, 255, 0.14); color: #7fd8f5; }
 .build-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 16px 0 22px; font-size: 14px; }
 .build-bar #picked { margin-right: auto; }
+.starters { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.starters .muted { font-size: 14px; }
 .chip {
   padding: 5px 12px;
   border: 1px solid var(--line);

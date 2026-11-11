@@ -184,6 +184,12 @@
         </label>
         <label class="setting"><input id="startup" type="checkbox" checked> Startup animation</label>
         <label class="setting" title="fn triple-tap-and-hold: test screen; fn quad-tap: next theme"><input id="debug-gestures" type="checkbox"> Debug gestures</label>
+        <span class="starters" role="group" aria-label="Start from a layout">
+          <span class="muted">Start from</span>
+          <button class="chip starter" type="button" data-starter="default" title="What fnstrip shows with no config: the mic and CPU, memory, disk, network and battery">Default</button>
+          <button class="chip starter" type="button" data-starter="simple" title="The mic, CPU, memory and battery">Simple</button>
+          <button class="chip starter" type="button" data-starter="meters" title="Every meter, no toggles">All meters</button>
+        </span>
         <button id="pick-all" class="chip" type="button">All ten</button>
         <button id="pick-none" class="chip" type="button">Clear</button>
       </div>

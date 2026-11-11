@@ -8,6 +8,7 @@ Thanks for looking. fnstrip is small and young, so the most useful help right no
 Open an issue with:
 
 - your model: `cat /sys/class/dmi/id/product_name` (for example `MacBookPro13,3`);
+- your fnstrip version: `fnstrip --version` (or `~/.local/bin/fnstrip --version`);
 - your T1Bridge version and Linux distribution;
 - what you did, what you expected, and what happened;
 - the log: `journalctl --user -u t1-touchbar.service -b` (look it over for anything

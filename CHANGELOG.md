@@ -9,6 +9,19 @@ may add settings, and a patch version (0.1.1) only fixes things.
 ever added; if one is ever renamed, the old name keeps working for a while, and the release
 notes here say so.
 
+## [Unreleased]
+
+### Added
+
+- `fnstrip --version` (and `--help`); the version is also logged when it starts.
+- Project page builder: what each toggle runs (ready-made commands or your own), the network
+  interface for the VPN and network meters, colour pickers for `[colors]`, and one-click
+  starting layouts (Default, Simple, All meters).
+
+### Fixed
+
+- Project page: meter values keep their black outline over busy graphs.
+
 ## [0.1.0] - 2026-11-11
 
 The first public release: a customizable Touch Bar renderer for T1 MacBook Pros (2016-2017)
@@ -76,4 +89,5 @@ every 30 seconds. The `net` meter never counts the T1's own link to the Mac.
 - fnstrip carries a modified copy of T1Bridge's renderer, so T1Bridge fixes to it need merging
   by hand.
 
+[Unreleased]: https://github.com/acmccubbin/fnstrip/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/acmccubbin/fnstrip/releases/tag/v0.1.0

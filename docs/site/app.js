@@ -539,8 +539,9 @@
       ctx.lineJoin = 'round';
       for (const [text, color] of lines) {
         const baseline = top + lineHeight;
-        ctx.lineWidth = 4;
-        ctx.strokeStyle = css(background);
+        // A black halo 2 px all round (meters.rs HALO, HALO_RADIUS), so values read over any graph.
+        ctx.lineWidth = 4.5;
+        ctx.strokeStyle = '#000';
         ctx.strokeText(text, x + width - 8 + 2, baseline);
         ctx.fillStyle = css(color);
         ctx.fillText(text, x + width - 8 + 2, baseline);
@@ -580,7 +581,9 @@
       Math.random() < 0.12 ? 1.2e6 * Math.random() : 8e3 * Math.random());
     sim.net = Math.max(2e3, sim.net * (0.85 + 0.3 * Math.random()) + (Math.random() < 0.05 ? 400e3 * Math.random() : 0));
     meters.net.push(sim.net, sim.net * (0.15 + 0.2 * Math.random()));
-    sim.vpn = Math.max(1e3, sim.vpn * (0.85 + 0.3 * Math.random()) + (Math.random() < 0.05 ? 90e3 * Math.random() : 0));
+    // Bursts that rise and settle, like real traffic, rather than noise.
+    sim.vpnRaw = Math.max(1e3, (sim.vpnRaw ?? 20e3) * (0.9 + 0.2 * Math.random()) + (Math.random() < 0.04 ? 80e3 * Math.random() : 0));
+    sim.vpn = sim.vpn * 0.75 + sim.vpnRaw * 0.25;
     meters.vpn.push(sim.vpn, sim.vpn * (0.4 + 0.4 * Math.random()));
     const battery = meters.battery;
     if (real.battery) {
@@ -1741,6 +1744,22 @@
     chosen = grouped(chosen.concat(Object.keys(EXTRA_INFO).filter((n) => !chosen.includes(n))));
     rebuild();
   });
+  // Starting layouts, one click each.
+  const STARTERS = {
+    default: ['mic', 'cpu', 'mem', 'disk', 'net', 'battery'],
+    simple: ['mic', 'cpu', 'mem', 'battery'],
+    meters: ['cpu', 'temp', 'fan', 'mem', 'disk', 'net', 'battery'],
+  };
+  for (const button of document.querySelectorAll('.starter')) {
+    button.addEventListener('click', () => {
+      builderUsed = true;
+      const names = STARTERS[button.dataset.starter];
+      chosen.filter((name) => !names.includes(name)).forEach(switchOff);
+      chosen = grouped(names.slice());
+      rebuild();
+      say(`<b>${button.textContent} layout</b>: double-tap fn to see it on the bar`);
+    });
+  }
   document.getElementById('pick-none').addEventListener('click', () => {
     builderUsed = true;
     chosen.forEach(switchOff);
