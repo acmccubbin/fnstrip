@@ -4,6 +4,9 @@ A customizable Touch Bar renderer for T1 MacBook Pros running Linux with
 [T1Bridge](https://github.com/standardagents/t1bridge). It replaces T1Bridge's built-in
 renderer through T1Bridge's documented renderer selection, as an ordinary user process.
 
+**Project page: [mccubbin.info/fnstrip](https://www.mccubbin.info/fnstrip/)**: try the bar in
+your browser (it runs fnstrip's own drawing code), and build your config with a live preview.
+
 Not affiliated with or endorsed by Apple or the T1Bridge project. "Touch Bar" is a trademark
 of Apple Inc.
 

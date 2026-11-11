@@ -16,6 +16,7 @@ notes here say so.
 ### Added
 
 - `fnstrip --version` (and `--help`); the version is also logged when it starts.
+- The README and the GitHub repo link to the project page.
 - Project page builder: what each toggle runs (ready-made commands or your own), the network
   interface for the VPN and network meters, colour pickers for `[colors]`, and one-click
   starting layouts (Default, Simple, All meters).
