@@ -10,6 +10,9 @@ of Apple Inc.
 **Status: beta.** Tested on one machine so far: a 15" 2016 MacBookPro13,3 running T1Bridge
 v0.1.12. Reports from other models are welcome.
 
+On a T2 Intel Mac or an Apple Silicon MacBook Pro with a Touch Bar? Those work differently:
+see [tiny-dfr](https://github.com/AsahiLinux/tiny-dfr) from the Asahi Linux project.
+
 ## What it does
 
 - **Controls row:** Esc, sliders for display brightness, keyboard backlight and volume that
@@ -88,6 +91,8 @@ downloaded or edited from the project page) before you use it.
 
 ## Good to know
 
+- **One Touch Bar driver at a time:** fnstrip is a T1Bridge renderer; T1Bridge owns the
+  hardware. Don't run another Touch Bar driver or renderer alongside T1Bridge.
 - **What it runs and reads:** fnstrip is an ordinary user process (no root, no setuid). Besides
   your config's commands, it starts only `busctl` (is media playing?), `pw-record` (the mic
   spectrum while the mic button is lit; the speakers' spectrum while media plays and the
@@ -111,6 +116,11 @@ downloaded or edited from the project page) before you use it.
 
 Written with substantial help from an AI coding assistant (Claude), under human direction and
 testing.
+
+## Contributing
+
+Reports from other T1 models are the most useful help: see [CONTRIBUTING.md](CONTRIBUTING.md).
+Security problems: [SECURITY.md](SECURITY.md).
 
 ## License
 

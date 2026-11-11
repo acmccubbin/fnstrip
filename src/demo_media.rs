@@ -132,7 +132,7 @@ fn render_sliders() {
 /// Sample data for a meter, varying with `step`.
 fn sample(icon: ExtraIcon, step: u32) -> [f64; 2] {
     let t = f64::from(step);
-    let wave = |period: f64, phase: f64| ((t / period + phase).sin() + 1.0) / 2.0;
+    let wave = |period: f64, phase: f64| f64::midpoint((t / period + phase).sin(), 1.0);
     match icon {
         ExtraIcon::Cpu => [0.12 + 0.3 * wave(9.0, 0.0), 0.04 + 0.1 * wave(5.0, 1.0)],
         ExtraIcon::Memory => [0.38 + 0.03 * wave(40.0, 0.0), 0.27],
@@ -164,7 +164,9 @@ fn plate(bar: StockBar, pixels: &mut [u8], index: u8) -> Vec<&mut [u8]> {
     let bounds = bar.extra_bounds(index).unwrap();
     let (left, width) = (bounds.x as usize, bounds.width as usize);
     pixels
-        .chunks_exact_mut(WIDTH as usize * 4)
+        .as_chunks_mut::<{ WIDTH as usize * 4 }>()
+        .0
+        .iter_mut()
         .map(|row| &mut row[left * 4..(left + width) * 4])
         .collect()
 }

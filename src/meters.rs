@@ -288,7 +288,7 @@ impl Meter {
 
     /// Made-up hardware, for the documentation's pictures: a battery at `level` on power
     /// with `hours` to full, a sensor with the default critical limit, and two fans with
-    /// the tested MacBook Pro's ranges.
+    /// the ranges of the 2016 laptop it was tested on.
     #[cfg(test)]
     pub(crate) fn pretend_hardware(&mut self, level: f64, hours: f64) {
         self.battery = Some(Battery {
