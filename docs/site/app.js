@@ -176,16 +176,23 @@
       { name: 'Mic mute (PulseAudio)', command: 'pactl set-source-mute @DEFAULT_SOURCE@ toggle', status: "LC_ALL=C pactl get-source-mute @DEFAULT_SOURCE@ | grep -q 'Mute: no'" },
     ],
     vpn: [
-      { name: 'WireGuard (wg-quick)', command: 'if [ -e /sys/class/net/wg0 ]; then wg-quick down wg0; else wg-quick up wg0; fi', status: 'test -e /sys/class/net/wg0',
+      { name: 'WireGuard (wg-quick)', command: 'if [ -e /sys/class/net/wg0 ]; then wg-quick down wg0; else wg-quick up wg0; fi', status: 'test -e /sys/class/net/wg0', interface: 'wg0',
         hint: 'wg-quick needs root, so this works only if you can run it without a password; NetworkManager can bring WireGuard up and down as you.' },
       { name: 'NetworkManager connection', command: 'if nmcli -t -f NAME connection show --active | grep -qx Work; then nmcli connection down Work; else nmcli connection up Work; fi',
-        status: 'nmcli -t -f NAME connection show --active | grep -qx Work', hint: 'Change Work to your connection\'s name (nmcli connection show lists them).' },
-      { name: 'Tailscale', command: 'tailscale status >/dev/null && tailscale down || tailscale up', status: 'tailscale status >/dev/null' },
+        status: 'nmcli -t -f NAME connection show --active | grep -qx Work', interface: 'tun0',
+        hint: 'Change Work to your connection\'s name (nmcli connection show lists them). OpenVPN uses tun0; a WireGuard connection uses its own name.' },
+      { name: 'Tailscale', command: 'tailscale status >/dev/null && tailscale down || tailscale up', status: 'tailscale status >/dev/null', interface: 'tailscale0' },
     ],
   };
   const presetsFor = (name) => (PRESETS[name] || []).concat(DO_NOT_DISTURB);
   // What each toggle runs: starts as its first preset, then whatever you type.
   const custom = Object.fromEntries(Object.keys(PRESETS).map((name) => [name, { command: PRESETS[name][0].command, status: PRESETS[name][0].status }]));
+  // The network interface the VPN's traffic graph and the net meter follow ('' = net: every
+  // network device that's up). fnstrip's own default for the VPN is wg0.
+  custom.vpn.interface = PRESETS.vpn[0].interface;
+  custom.net = { interface: '' };
+  /** Linux interface names: up to 15 characters, no spaces, slashes or colons. */
+  const validInterface = (name) => /^[^\s/:]{1,15}$/.test(name);
 
   // The builder starts from the built-in default (config/default.toml), so its download
   // works as-is; the hero bar shows every button until the builder is used.
@@ -1603,11 +1610,11 @@
 
   /** One card per chosen toggle: a preset to start from, then its command and status. */
   function renderToggleEditor() {
-    const toggles = chosen.filter((name) => EXTRA_INFO[name].kind === 'toggle');
+    const toggles = chosen.filter((name) => EXTRA_INFO[name].kind === 'toggle' || name === 'net');
     toggleEditor.hidden = toggles.length === 0;
     if (toggles.join() === shownToggles) return; // keep typing undisturbed
     shownToggles = toggles.join();
-    toggleCards.replaceChildren(...toggles.map(toggleCard));
+    toggleCards.replaceChildren(...toggles.map((name) => (name === 'net' ? netCard() : toggleCard(name))));
   }
 
   /** Rows for a command box: two to five, by length (about 40 characters a line). */
@@ -1637,6 +1644,8 @@
     };
     const [commandField, command] = field('command (runs on tap)', 'command', 'any shell command');
     const [statusField, status] = field('status (exit 0 = lit)', 'status', 'optional: a command that succeeds while it\'s on');
+    const [interfaceField, iface] = name === 'vpn' ? interfaceInput('interface (its traffic graph)', 'vpn', 'wg0') : [null, null];
+    if (iface) iface.addEventListener('input', () => update());
     const note = document.createElement('p');
     note.className = 'cmd-note';
     const update = () => {
@@ -1647,6 +1656,7 @@
       if (index >= 0 && presets[index].hint) notes.push(presets[index].hint);
       if (!custom[name].command.trim()) notes.push('No command: tapping does nothing.');
       if (!custom[name].status.trim()) notes.push('No status: the button is never lit.');
+      if (iface && iface.value.trim() && !validInterface(iface.value.trim())) notes.push(INTERFACE_HINT);
       note.textContent = notes.join(' ');
       note.hidden = notes.length === 0;
       configOut.innerHTML = highlight(configText());
@@ -1657,6 +1667,10 @@
       custom[name] = { command: preset.command, status: preset.status };
       command.value = preset.command;
       status.value = preset.status;
+      if (iface && preset.interface) {
+        custom.vpn.interface = preset.interface;
+        iface.value = preset.interface;
+      }
       command.rows = fitRows(command.value);
       status.rows = fitRows(status.value);
       update();
@@ -1666,7 +1680,47 @@
     const top = document.createElement('label');
     top.className = 'cmd-preset';
     top.append('Start from ', select);
-    card.append(legend, top, commandField, statusField, note);
+    card.append(legend, top, commandField, statusField, ...(interfaceField ? [interfaceField] : []), note);
+    update();
+    return card;
+  }
+
+  const INTERFACE_HINT = 'Interface names are up to 15 characters, with no spaces, slashes or colons; ip link lists yours.';
+
+  /** A one-line box for a network interface name, kept in custom[name].interface. */
+  function interfaceInput(label, name, placeholder) {
+    const wrap = document.createElement('label');
+    wrap.className = 'cmd-field';
+    const text = document.createElement('span');
+    text.textContent = label;
+    const input = document.createElement('input');
+    Object.assign(input, { type: 'text', value: custom[name].interface, placeholder, spellcheck: false, autocomplete: 'off' });
+    input.setAttribute('autocapitalize', 'off');
+    input.addEventListener('input', () => { custom[name].interface = input.value; });
+    wrap.append(text, input);
+    return [wrap, input];
+  }
+
+  /** The net meter: every network device that's up, or the one interface you name. */
+  function netCard() {
+    const card = document.createElement('fieldset');
+    card.className = 'toggle-card';
+    const legend = document.createElement('legend');
+    legend.textContent = 'Network';
+    const about = document.createElement('p');
+    about.className = 'cmd-about';
+    about.textContent = 'Leave it empty to count every network device that\'s up (Wi-Fi, USB Ethernet, …), or name one to graph only that.';
+    const [field, input] = interfaceInput('interface', 'net', 'all devices that are up');
+    const note = document.createElement('p');
+    note.className = 'cmd-note';
+    const update = () => {
+      const value = input.value.trim();
+      note.hidden = !value || validInterface(value);
+      note.textContent = INTERFACE_HINT;
+      configOut.innerHTML = highlight(configText());
+    };
+    input.addEventListener('input', update);
+    card.append(legend, about, field, note);
     update();
     return card;
   }
@@ -1796,8 +1850,10 @@
         lines.push(`icon    = "${name}"`, `command = ${tomlString(command)}`);
         if (status.trim()) lines.push(`status  = ${tomlString(status)}`);
         else lines.push('# No status command: the button is never lit.');
+        if (name === 'vpn' && custom.vpn.interface.trim()) lines.push(`interface = ${tomlString(custom.vpn.interface.trim())}   # its traffic graph`);
       } else {
         lines.push(`icon = "${name}"   # ${info.short}`);
+        if (name === 'net' && custom.net.interface.trim()) lines.push(`interface = ${tomlString(custom.net.interface.trim())}`);
       }
     }
     if (!chosen.length) lines.push('', '# No [[extras]]: the extras row shows just Esc.');

@@ -355,7 +355,7 @@ button.link:hover { text-decoration: underline; }
 }
 .toggle-card legend { padding: 0 6px; font-weight: 700; }
 .cmd-preset { display: flex; align-items: center; gap: 8px; margin: 2px 0 10px; color: #c4c4cc; font-size: 14px; }
-.cmd-preset select, .cmd-field textarea {
+.cmd-preset select, .cmd-field textarea, .cmd-field input {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #0e0e12;
@@ -365,8 +365,10 @@ button.link:hover { text-decoration: underline; }
 .cmd-field { display: block; margin: 0 0 8px; }
 .cmd-field span { display: block; margin: 0 0 3px; color: var(--muted); font-size: 12.5px; }
 .cmd-field textarea { display: block; width: 100%; padding: 7px 9px; font: 12.5px/1.5 "JetBrains Mono", monospace; resize: vertical; }
-.cmd-field textarea:focus, .cmd-preset select:focus { outline: 2px solid var(--cyan); outline-offset: 1px; }
+.cmd-field textarea:focus, .cmd-field input:focus, .cmd-preset select:focus { outline: 2px solid var(--cyan); outline-offset: 1px; }
+.cmd-field input { display: block; width: 100%; padding: 7px 9px; font: 12.5px "JetBrains Mono", monospace; }
 .cmd-note { margin: 2px 0 0; color: #e8c37a; font-size: 13px; }
+.cmd-about { margin: 2px 0 10px; color: var(--muted); font-size: 13.5px; }
 .build h3 { margin: 0 0 12px; font-size: 20px; }
 .code.small { margin: 0 0 14px; font-size: 12.5px; }
 .code-head {
