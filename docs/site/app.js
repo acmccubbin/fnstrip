@@ -1846,10 +1846,13 @@
     repo.hidden = false;
     for (const link of document.querySelectorAll('.repo-link')) link.href = repoUrl;
     document.querySelector('.repo-foot').hidden = false;
+    // Step 2 starts from the source: the clone goes into its commands, so Copy takes it all.
     const clone = document.querySelector('.repo-clone');
     clone.textContent = '';
-    clone.append('Clone ', Object.assign(document.createElement('a'), { href: repoUrl, textContent: 'the repository' }),
-      ` (git clone ${repoUrl}.git), then, in it:`);
+    clone.append('Get ', Object.assign(document.createElement('a'), { href: repoUrl, textContent: 'the source' }),
+      ', build it, and link it in:');
+    const commands = clone.closest('li').querySelector('pre code');
+    commands.textContent = `git clone ${repoUrl}.git\ncd fnstrip\n${commands.textContent}`;
   }
 
   // Copy buttons on the install commands.
