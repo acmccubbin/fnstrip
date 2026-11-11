@@ -191,6 +191,13 @@
         <div class="bezel"><canvas id="preview" width="2170" height="60" role="img" aria-label="Your extras row"></canvas></div>
         <figcaption>Your extras row, as the bar will draw it. Drag a button along it to move it.</figcaption>
       </figure>
+      <div class="toggle-editor" id="toggle-editor" hidden>
+        <h3>What your toggles run</h3>
+        <p class="muted">Each toggle runs a command when tapped, and lights up while its status
+          command succeeds (exits 0). Start from a ready-made one, or type your own: anything you
+          can run in a terminal works. fnstrip reads no output, only the status command's exit code.</p>
+        <div class="toggle-cards" id="toggle-cards"></div>
+      </div>
       <div class="split">
         <div>
           <h3>Or make your own</h3>

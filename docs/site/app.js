@@ -159,6 +159,34 @@
       short: 'green with a bolt on power',
     },
   };
+  // Ready-made commands for the toggles (config/default.toml has the same examples). Each
+  // toggle starts from its first; "do not disturb" ones fit any toggle icon.
+  const DO_NOT_DISTURB = [
+    { name: 'Do not disturb (mako)', command: 'makoctl mode -t do-not-disturb', status: 'makoctl mode | grep -q do-not-disturb' },
+    { name: 'Do not disturb (dunst)', command: 'dunstctl set-paused toggle', status: 'dunstctl is-paused | grep -q true' },
+    { name: 'Do not disturb (SwayNC)', command: 'swaync-client -d', status: 'swaync-client -D | grep -q true' },
+  ];
+  const PRESETS = {
+    camera: [
+      { name: 'fnstrip webcam service', command: 'webcam toggle', status: 'systemctl --user --quiet is-active t1-webcam.service',
+        hint: 'The webcam service and its script are in contrib/t1-webcam; they also give the lit button its picture.' },
+    ],
+    mic: [
+      { name: 'Mic mute (PipeWire)', command: 'wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle', status: '! wpctl get-volume @DEFAULT_AUDIO_SOURCE@ | grep -q MUTED' },
+      { name: 'Mic mute (PulseAudio)', command: 'pactl set-source-mute @DEFAULT_SOURCE@ toggle', status: "LC_ALL=C pactl get-source-mute @DEFAULT_SOURCE@ | grep -q 'Mute: no'" },
+    ],
+    vpn: [
+      { name: 'WireGuard (wg-quick)', command: 'if [ -e /sys/class/net/wg0 ]; then wg-quick down wg0; else wg-quick up wg0; fi', status: 'test -e /sys/class/net/wg0',
+        hint: 'wg-quick needs root, so this works only if you can run it without a password; NetworkManager can bring WireGuard up and down as you.' },
+      { name: 'NetworkManager connection', command: 'if nmcli -t -f NAME connection show --active | grep -qx Work; then nmcli connection down Work; else nmcli connection up Work; fi',
+        status: 'nmcli -t -f NAME connection show --active | grep -qx Work', hint: 'Change Work to your connection\'s name (nmcli connection show lists them).' },
+      { name: 'Tailscale', command: 'tailscale status >/dev/null && tailscale down || tailscale up', status: 'tailscale status >/dev/null' },
+    ],
+  };
+  const presetsFor = (name) => (PRESETS[name] || []).concat(DO_NOT_DISTURB);
+  // What each toggle runs: starts as its first preset, then whatever you type.
+  const custom = Object.fromEntries(Object.keys(PRESETS).map((name) => [name, { command: PRESETS[name][0].command, status: PRESETS[name][0].status }]));
+
   // The builder starts from the built-in default (config/default.toml), so its download
   // works as-is; the hero bar shows every button until the builder is used.
   let chosen = ['mic', 'cpu', 'mem', 'disk', 'net', 'battery'];
@@ -998,7 +1026,7 @@
       return;
     }
     const on = !state.lit[p.id];
-    say(`<b>${p.id}</b> runs <span class="cmd">sh -c '${p.extra.command}'</span>`);
+    say(`<b>${p.id}</b> runs <span class="cmd">sh -c '${escapeHtml(custom[p.id]?.command ?? '')}'</span>`);
     try {
       if (p.id === 'camera') {
         if (on) await camera.start(); else camera.stop();
@@ -1563,7 +1591,84 @@
       tile.parentElement.classList.toggle('picked', index >= 0);
     }
     document.getElementById('picked').textContent = `${chosen.length} of ${MAX_EXTRAS} buttons`;
+    renderToggleEditor();
     configOut.innerHTML = highlight(configText());
+  }
+
+  // ---- What each toggle runs ----------------------------------------------------------------
+
+  const toggleEditor = document.getElementById('toggle-editor');
+  const toggleCards = document.getElementById('toggle-cards');
+  let shownToggles = '';
+
+  /** One card per chosen toggle: a preset to start from, then its command and status. */
+  function renderToggleEditor() {
+    const toggles = chosen.filter((name) => EXTRA_INFO[name].kind === 'toggle');
+    toggleEditor.hidden = toggles.length === 0;
+    if (toggles.join() === shownToggles) return; // keep typing undisturbed
+    shownToggles = toggles.join();
+    toggleCards.replaceChildren(...toggles.map(toggleCard));
+  }
+
+  /** Rows for a command box: two to five, by length (about 40 characters a line). */
+  const fitRows = (text) => Math.min(5, Math.max(2, Math.ceil(text.length / 40)));
+
+  function toggleCard(name) {
+    const card = document.createElement('fieldset');
+    card.className = 'toggle-card';
+    const legend = document.createElement('legend');
+    legend.textContent = EXTRA_INFO[name].title;
+    const select = document.createElement('select');
+    for (const [index, preset] of presetsFor(name).entries()) select.add(new Option(preset.name, String(index)));
+    select.add(new Option('Your own', 'own'));
+    const field = (label, key, placeholder) => {
+      const wrap = document.createElement('label');
+      wrap.className = 'cmd-field';
+      const text = document.createElement('span');
+      text.textContent = label;
+      // Two wrapping lines, so long commands stay readable.
+      const input = document.createElement('textarea');
+      Object.assign(input, { value: custom[name][key], placeholder, spellcheck: false, autocomplete: 'off' });
+      input.rows = fitRows(input.value);
+      input.addEventListener('input', () => { input.rows = fitRows(input.value); });
+      input.setAttribute('autocapitalize', 'off');
+      wrap.append(text, input);
+      return [wrap, input];
+    };
+    const [commandField, command] = field('command (runs on tap)', 'command', 'any shell command');
+    const [statusField, status] = field('status (exit 0 = lit)', 'status', 'optional: a command that succeeds while it\'s on');
+    const note = document.createElement('p');
+    note.className = 'cmd-note';
+    const update = () => {
+      const presets = presetsFor(name);
+      const index = presets.findIndex((p) => p.command === custom[name].command && p.status === custom[name].status);
+      select.value = index >= 0 ? String(index) : 'own';
+      const notes = [];
+      if (index >= 0 && presets[index].hint) notes.push(presets[index].hint);
+      if (!custom[name].command.trim()) notes.push('No command: tapping does nothing.');
+      if (!custom[name].status.trim()) notes.push('No status: the button is never lit.');
+      note.textContent = notes.join(' ');
+      note.hidden = notes.length === 0;
+      configOut.innerHTML = highlight(configText());
+    };
+    select.addEventListener('change', () => {
+      if (select.value === 'own') return;
+      const preset = presetsFor(name)[Number(select.value)];
+      custom[name] = { command: preset.command, status: preset.status };
+      command.value = preset.command;
+      status.value = preset.status;
+      command.rows = fitRows(command.value);
+      status.rows = fitRows(status.value);
+      update();
+    });
+    command.addEventListener('input', () => { custom[name].command = command.value; update(); });
+    status.addEventListener('input', () => { custom[name].status = status.value; update(); });
+    const top = document.createElement('label');
+    top.className = 'cmd-preset';
+    top.append('Start from ', select);
+    card.append(legend, top, commandField, statusField, note);
+    update();
+    return card;
   }
 
   document.getElementById('pick-all').addEventListener('click', () => {
@@ -1661,7 +1766,13 @@
     rebuild();
   });
 
-  const tomlString = (value) => (value.includes('"') || value.includes('\\') ? `'${value}'` : `"${value}"`);
+  /** A TOML string fnstrip's parser reads back exactly: "basic" (with \\" \\\\ \\n \\t escapes) unless a
+   *  'literal' one avoids escapes (no ' and no line breaks or tabs). */
+  function tomlString(value) {
+    if (!/["\\\n\t]/.test(value)) return `"${value}"`;
+    if (!/['\n\t]/.test(value)) return `'${value}'`;
+    return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\t/g, '\\t')}"`;
+  }
   function configText() {
     const lines = [
       '# fnstrip config, made with the builder on the fnstrip page.',
@@ -1679,9 +1790,12 @@
       const info = EXTRA_INFO[name];
       lines.push('', '[[extras]]');
       if (info.kind === 'toggle') {
-        lines.push(`icon    = "${name}"`, `command = ${tomlString(info.command)}`, `status  = ${tomlString(info.status)}`);
-        if (name === 'camera') lines.splice(lines.length - 3, 0, '# See contrib/t1-webcam for the webcam service and script.');
-        if (name === 'vpn') lines.splice(lines.length - 3, 0, '# Your own VPN up/down command; status lights it while wg0 exists.');
+        const { command, status } = custom[name];
+        const preset = presetsFor(name).find((p) => p.command === command && p.status === status);
+        if (preset) lines.push(`# ${preset.name}`);
+        lines.push(`icon    = "${name}"`, `command = ${tomlString(command)}`);
+        if (status.trim()) lines.push(`status  = ${tomlString(status)}`);
+        else lines.push('# No status command: the button is never lit.');
       } else {
         lines.push(`icon = "${name}"   # ${info.short}`);
       }

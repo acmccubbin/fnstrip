@@ -112,7 +112,7 @@ h2 { font-size: clamp(26px, 3.4vw, 36px); letter-spacing: -0.02em; margin: 0 0 1
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
-.lede { max-width: 760px; font-size: clamp(17px, 2vw, 20px); color: #c9c9d2; margin: 0 0 36px; }
+.lede { font-size: clamp(17px, 2vw, 21px); line-height: 1.65; color: #c9c9d2; margin: 0 0 32px; text-wrap: pretty; }
 .muted { color: var(--muted); }
 
 /* The laptop deck: the bar, then a strip of keys. */
@@ -341,6 +341,32 @@ button.link:hover { text-decoration: underline; }
 }
 .setting input { accent-color: var(--cyan); }
 .build .strip { margin-bottom: 36px; }
+.toggle-editor { margin: -12px 0 36px; }
+.toggle-editor h3 { margin: 0 0 6px; font-size: 20px; }
+.toggle-editor > .muted { max-width: 860px; margin: 0 0 16px; font-size: 14.5px; }
+.toggle-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 14px; }
+.toggle-card {
+  margin: 0;
+  padding: 12px 16px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #111115;
+  min-width: 0;
+}
+.toggle-card legend { padding: 0 6px; font-weight: 700; }
+.cmd-preset { display: flex; align-items: center; gap: 8px; margin: 2px 0 10px; color: #c4c4cc; font-size: 14px; }
+.cmd-preset select, .cmd-field textarea {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0e0e12;
+  color: var(--text);
+}
+.cmd-preset select { flex: 1; min-width: 0; padding: 5px 8px; font: 13px Inter, sans-serif; }
+.cmd-field { display: block; margin: 0 0 8px; }
+.cmd-field span { display: block; margin: 0 0 3px; color: var(--muted); font-size: 12.5px; }
+.cmd-field textarea { display: block; width: 100%; padding: 7px 9px; font: 12.5px/1.5 "JetBrains Mono", monospace; resize: vertical; }
+.cmd-field textarea:focus, .cmd-preset select:focus { outline: 2px solid var(--cyan); outline-offset: 1px; }
+.cmd-note { margin: 2px 0 0; color: #e8c37a; font-size: 13px; }
 .build h3 { margin: 0 0 12px; font-size: 20px; }
 .code.small { margin: 0 0 14px; font-size: 12.5px; }
 .code-head {
@@ -418,13 +444,22 @@ h1 .grad { white-space: nowrap; }
 .code .h { color: #b9a6ff; }
 
 /* Hero badges */
-.badges { display: flex; flex-wrap: wrap; gap: 8px; margin: -20px 0 28px; padding: 0; list-style: none; }
+.badges {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin: 0 0 40px;
+  padding: 0;
+  list-style: none;
+}
 .badges li {
-  padding: 4px 12px;
+  padding: 12px 16px;
   border: 1px solid var(--line);
   border-radius: 999px;
+  background: #111115;
   color: #c4c4cc;
-  font-size: 13px;
+  font-size: 14.5px;
+  text-align: center;
 }
 .badges li::before { content: "\2713"; margin-right: 6px; color: var(--green); }
 
@@ -597,7 +632,8 @@ footer {
   .theme-strip canvas { width: 260%; max-width: none; }
   .steps > li { padding-left: 46px; }
   td:first-child { white-space: normal; }
-  .badges { margin-top: -18px; }
+  .badges { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 30px; }
+  .badges li { padding: 10px 8px; font-size: 13.5px; border-radius: 14px; }
   .split { grid-template-columns: minmax(0, 1fr); gap: 20px; }
   .top nav a:not(.repo) { display: none; }
   .deck { padding: 12px 12px 10px; border-radius: 16px; }
