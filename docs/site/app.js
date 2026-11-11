@@ -1,25 +1,24 @@
-// fnstrip in the browser: the bar redrawn on a 2170x60 canvas (the panel's own size) with the
-// renderer's icons (sprites.js, cut from its own frames by tools/make_demo_media.py), the
-// same plate layout and colours, the Fn gestures, the extras row's live faces and the
-// startup animation (a port of src/intro.rs). Meters show sample data, except the battery
-// where the browser shares it; the camera and mic are real, and stay in this tab.
+// fnstrip in the browser: the bar on a 2170x60 canvas (the panel's own size), drawn by the
+// renderer's own Rust code compiled to WebAssembly (web/, see tools/build_web.sh): rows,
+// themes, live faces and the startup animation. This page adds the browser side: touches and
+// the Fn gestures, made-up meter readings (the battery is real where the browser shares it),
+// the camera and mic (real, and they stay in this tab), a little synthesized music.
 (() => {
   'use strict';
 
   const W = 2170;
   const H = 60;
-  const S = window.SPRITES;
 
   const rgb = (r, g, b) => `rgb(${r},${g},${b})`;
-  // ---- Themes (src/theme.rs: the same colours and maths) -----------------------------------
+  // ---- Themes: colours for the page, and the live faces' tint (src/theme.rs face_tint) -------
 
   const THEMES = {
     default: { background: [0, 0, 0], plate: [53, 53, 53], pressed: [76, 76, 76], label: [242, 242, 242], dim: [150, 150, 150],
       lit: [32, 128, 64], litPressed: [58, 164, 92], fill: [110, 110, 110], muted: [72, 72, 72], hues: 'plain' },
-    mono: { background: [0, 0, 0], plate: [26, 26, 26], pressed: [70, 70, 70], label: [255, 255, 255], dim: [110, 110, 110],
-      lit: [118, 118, 118], litPressed: [150, 150, 150], fill: [88, 88, 88], muted: [44, 44, 44], hues: 'grey' },
     pastel: { background: [26, 24, 32], plate: [205, 205, 205], pressed: [236, 236, 236], label: [46, 40, 60], dim: [120, 112, 132],
       lit: [96, 178, 136], litPressed: [128, 200, 162], fill: [160, 160, 160], muted: [190, 190, 190], hues: 'pastel' },
+    mono: { background: [0, 0, 0], plate: [26, 26, 26], pressed: [70, 70, 70], label: [255, 255, 255], dim: [110, 110, 110],
+      lit: [118, 118, 118], litPressed: [150, 150, 150], fill: [88, 88, 88], muted: [44, 44, 44], hues: 'grey' },
     rainbow: { background: [0, 0, 0], plate: [66, 66, 66], pressed: [100, 100, 100], label: [242, 242, 242], dim: [150, 150, 150],
       lit: [225, 30, 120], litPressed: [245, 80, 155], fill: [108, 108, 108], muted: [80, 80, 80], hues: 'rainbow' },
   };
@@ -27,9 +26,6 @@
   let fahrenheit = false; // the builder's temperature setting
   let themeName = 'default';
   const COLOR = {};
-  const LIVE_LABEL = rgb(242, 242, 242); // icons over live faces keep their light colour
-  const same = (c) => c;
-  let tint = same; // how the live face being drawn is recoloured (Theme::face_tint)
 
   // The builder's [colors] overrides, by config key, as [r, g, b]; on top of any theme.
   const COLOR_KEYS = {
@@ -54,70 +50,8 @@
   }
   applyTheme('default');
 
-  // src/theme.rs, in JS: the same colours and maths.
-  const luma = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-  const toByte = (v) => Math.round(Math.min(1, Math.max(0, v)) * 255);
-  function fromHue(hue, chroma, offset) {
-    const sector = ((hue / 60) % 6 + 6) % 6;
-    const second = chroma * (1 - Math.abs((sector % 2) - 1));
-    const [r, g, b] = sector < 1 ? [chroma, second, 0] : sector < 2 ? [second, chroma, 0] : sector < 3 ? [0, chroma, second]
-      : sector < 4 ? [0, second, chroma] : sector < 5 ? [second, 0, chroma] : [chroma, 0, second];
-    return [toByte(r + offset), toByte(g + offset), toByte(b + offset)];
-  }
-  const hsv = (h, s, v) => fromHue(h, v * s, v - v * s);
-  function hsl(h, s, l) {
-    const chroma = (1 - Math.abs(2 * l - 1)) * s;
-    return fromHue(h, chroma, l - chroma / 2);
-  }
-  function toHsv(c) {
-    const [r, g, b] = c.map((v) => v / 255);
-    const max = Math.max(r, g, b);
-    const chroma = max - Math.min(r, g, b);
-    let hue = 0;
-    if (chroma > 0) {
-      if (max === r) hue = 60 * ((((g - b) / chroma) % 6) + 6) % 360;
-      else if (max === g) hue = 60 * ((b - r) / chroma + 2);
-      else hue = 60 * ((r - g) / chroma + 4);
-    }
-    return [hue, max > 0 ? chroma / max : 0, max];
-  }
-  const pastelHue = (plateX) => (Math.floor(plateX / 95) * 67) % 360;
-  const rainbowHue = (plateX) => (plateX / W) * 300;
-  /** Theme::plate_colour: surface colour `base` on the plate starting at plateX. */
-  function plateColour(base, plateX) {
-    const level = luma(base) / 255;
-    if (theme.hues === 'pastel') return hsl(pastelHue(plateX), 0.6, level);
-    if (theme.hues === 'rainbow') return hsv(rainbowHue(plateX), 0.72, Math.min(1, level * 1.9));
-    return base;
-  }
-  /** Theme::face_tint: how the live face on the plate starting at plateX is recoloured. */
-  function faceTint(plateX) {
-    const rehue = (hue, scale) => (c) => {
-      const [, s, v] = toHsv(c);
-      return hsv(hue, Math.min(1, s * scale), v);
-    };
-    switch (theme.hues) {
-      case 'grey': return (c) => { const v = toByte(luma(c) / 255); return [v, v, v]; };
-      case 'pastel': return rehue(pastelHue(plateX), 0.5);
-      case 'rainbow': return rehue(rainbowHue(plateX), 1);
-      default: return same;
-    }
-  }
-  /** A plate (or the left `width` px of one, for a slider fill) in theme surface `base`. */
-  function surface(x, w, base, width = w) {
-    if (width <= 0) return;
-    const c = plateColour(base, x);
-    clipPlate(x, w);
-    ctx.fillStyle = rgb(c[0], c[1], c[2]);
-    ctx.fillRect(x, 0, width, H);
-    ctx.restore();
-  }
-
   const RADIUS = 8;
   const SLIDER_ICON = 72;
-  const SLIDER_TEXT_MARGIN = 16;
-  const LIVE_ICON = 64;
-  const VALUE_FONT = 'Inter, system-ui, sans-serif';
 
   // ---- Layout (from the renderer's StockBar) ----------------------------------------------
 
@@ -209,6 +143,7 @@
   // works as-is; the hero bar shows every button until the builder is used.
   let chosen = ['mic', 'cpu', 'mem', 'disk', 'net', 'battery'];
   let builderUsed = false;
+  let keptConfig = null; // the config last kept (page start, copy or download)
   let EXTRAS = [];
   function layoutExtras() {
     EXTRAS = extrasRow(chosen);
@@ -257,335 +192,110 @@
   let pan = 0; // bar x at the left edge
   let panTarget = null;
 
-  const sprites = new Image();
-  sprites.src = window.SPRITE_SHEET;
-  const tinted = {}; // colour -> canvas of the sheet in that colour
+  // ---- Drawing the rows: fnstrip's own code ---------------------------------------------------
+  // Everything on the bar (plates, sliders, keys, icons, themes, the meters, the camera and
+  // spectrum faces) and the startup animation is drawn by the renderer's own Rust code,
+  // compiled for the browser (web/, embedded by tools/build_web.sh), so this bar matches the
+  // real one pixel for pixel. The page feeds it: made-up meter readings, audio, the camera.
 
-  function sheet(color) {
-    if (!tinted[color]) {
-      const c = document.createElement('canvas');
-      c.width = sprites.width;
-      c.height = sprites.height;
-      const g = c.getContext('2d');
-      g.drawImage(sprites, 0, 0);
-      g.globalCompositeOperation = 'source-in';
-      g.fillStyle = color;
-      g.fillRect(0, 0, c.width, c.height);
-      tinted[color] = c;
+  let rust = null; // the WebAssembly exports, once loaded
+  const RUST_THEMES = ['default', 'pastel', 'mono', 'rainbow']; // Theme::NAMES
+  const RUST_ICONS = ['camera', 'mic', 'vpn', 'cpu', 'mem', 'disk', 'net', 'battery', 'temp', 'fan']; // ExtraIcon::NAMES
+  const blankRow = new ImageData(W, H);
+  let themePlain = false; // the themes gallery: themes without the builder's colour changes
+  // A view straight into the drawing code's frame (no copy): used at once, before the next draw.
+  const rustPixels = (pointer) => new ImageData(new Uint8ClampedArray(rust.memory.buffer, pointer, W * H * 4), W, H);
+
+  /** Whether extras plate `p` shows a live face (drawn here, over the plate the row leaves). */
+  function liveFace(p, showLit) {
+    const lit = state.lit[p.id] || (showLit && p.extra.kind === 'toggle');
+    if (p.id === 'camera') return lit && camera.ready;
+    if (p.id === 'mic') return lit && mic.ready;
+    if (p.id === 'vpn') return lit;
+    return p.extra.kind === 'meter';
+  }
+
+  /** The touched button, as web/'s `pressed` code. */
+  function pressedCode(plates) {
+    const id = state.pressed;
+    if (!id) return 0;
+    const fixed = { esc: 1, previous: 2, playpause: 3, next: 4 }[id];
+    if (fixed) return fixed;
+    const key = /^F(\d+)$/.exec(id);
+    if (key) return 10 + Number(key[1]);
+    const index = plates.filter((p) => p.extra).findIndex((p) => p.id === id);
+    return index >= 0 ? 100 + index : 0;
+  }
+
+  /** Row `plates`, live faces and all, drawn by the renderer's code: RGBA pixels.
+   *  Pixels, not a shared canvas: Safari copies canvases at the end of the frame, so a row
+   *  drawn later into a shared one would land in every place it was copied to. */
+  function renderRow(plates, showLit = false) {
+    if (!rust) return blankRow;
+    const layer = plates === CONTROLS ? 0 : plates === FUNCTION ? 1 : 2;
+    rust.theme(Math.max(0, RUST_THEMES.indexOf(themeName)));
+    if (!themePlain) {
+      for (const [key, [r, g, b]] of Object.entries(overrides)) rust.color(Object.keys(COLOR_KEYS).indexOf(key), (r << 16) | (g << 8) | b);
     }
-    return tinted[color];
-  }
-
-  /** An icon at its place in the plate (as the renderer draws it), or at x, y if given. */
-  function icon(name, plateX, color = COLOR.label, at = null) {
-    const s = S[name];
-    if (!s || !sprites.complete) return;
-    const x = at ? at[0] : plateX + s.dx;
-    const y = at ? at[1] : s.dy;
-    ctx.drawImage(sheet(color), s.x, 0, s.w, s.h, Math.round(x), Math.round(y), s.w, s.h);
-  }
-
-  function roundRect(x, w, color) {
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.roundRect(x, 0, w, H, RADIUS);
-    ctx.fill();
-  }
-
-  function clipPlate(x, w) {
-    ctx.save();
-    ctx.beginPath();
-    ctx.roundRect(x, 0, w, H, RADIUS);
-    ctx.clip();
-  }
-
-  // ---- Drawing the rows -------------------------------------------------------------------
-
-  function drawSlider(p) {
-    const level = state.levels[p.id];
-    const muted = (p.id === 'volume' && state.muted) || (p.id === 'keyboard' && level === 0);
-    surface(p.x, p.w, theme.plate);
-    surface(p.x, p.w, muted ? theme.muted : theme.fill, Math.round((p.w * level) / 100));
-    const label = muted ? COLOR.dim : COLOR.label;
-    icon(muted && p.id === 'volume' ? 'muted' : p.icon, p.x, label);
-    ctx.fillStyle = label;
-    ctx.font = `500 24px ${VALUE_FONT}`;
-    ctx.letterSpacing = '2px';
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(`${level}%`, p.x + p.w - SLIDER_TEXT_MARGIN + 2, H / 2 + 1);
-    ctx.letterSpacing = '0px';
-  }
-
-  function drawKey(p) {
-    const pressed = state.pressed === p.id;
-    if (p.id === 'playpause' && music.playing) {
-      // Lit while playing, with the speakers' spectrum under the icon.
-      clipPlate(p.x, p.w);
-      tint = faceTint(p.x);
-      music.spectrum.draw(p.x, p.w);
-      tint = same;
-      if (pressed) {
-        ctx.fillStyle = 'rgba(242, 242, 242, 0.25)';
-        ctx.fillRect(p.x, 0, p.w, H);
-      }
-      ctx.restore();
-      icon(p.icon, p.x, LIVE_LABEL);
-      return;
-    }
-    surface(p.x, p.w, pressed ? theme.pressed : theme.plate);
-    icon(p.icon, p.x);
-  }
-
-  function drawExtra(p, showLit = false) {
-    tint = faceTint(p.x);
-    try {
-      drawExtraFace(p, showLit);
-    } finally {
-      tint = same;
-    }
-  }
-
-  function drawExtraFace(p, showLit) {
-    const lit = state.lit[p.id] || showLit;
-    const pressed = state.pressed === p.id;
-    const meter = meters[p.id];
-    if (p.id === 'camera' && lit && camera.ready) {
-      clipPlate(p.x, p.w);
-      camera.draw(p.x, p.w);
-      ctx.restore();
-      icon('camera-on', p.x, LIVE_LABEL);
-    } else if (p.id === 'mic' && lit && mic.ready) {
-      clipPlate(p.x, p.w);
-      mic.draw(p.x, p.w);
-      ctx.restore();
-      icon('mic-on', p.x, LIVE_LABEL);
-    } else if (meter && (p.id !== 'vpn' || lit)) {
-      clipPlate(p.x, p.w);
-      meter.draw(p.x, p.w);
-      ctx.restore();
-      const name = p.id === 'vpn' ? 'vpn-on' : p.id === 'battery' && meter.charging ? 'battery-on' : p.id;
-      const s = S[name];
-      icon(name, p.x, LIVE_LABEL, [p.x + (LIVE_ICON - s.w) / 2, (H - s.h) / 2]);
-    } else {
-      if (lit) roundRect(p.x, p.w, pressed ? COLOR.onPressed : COLOR.on);
-      else surface(p.x, p.w, pressed ? theme.pressed : theme.plate);
-      icon(lit ? `${p.id}-on` : p.id, p.x);
-    }
+    const extras = plates.filter((p) => p.extra);
+    let first = 0;
+    let rest = 0;
+    extras.forEach((p, i) => {
+      const icon = RUST_ICONS.indexOf(p.id);
+      if (i < 5) first |= icon << (i * 4);
+      else rest |= icon << ((i - 5) * 4);
+    });
+    rust.extras(extras.length, first, rest);
+    const playing = layer === 0 && music.playing;
+    rust.levels(state.levels.brightness, state.levels.keyboard, state.levels.volume, (state.muted ? 1 : 0) | (playing ? 6 : 0));
+    let on = 0;
+    let live = 0;
+    extras.forEach((p, i) => {
+      if (state.lit[p.id] || (showLit && p.extra.kind === 'toggle')) on |= 1 << i;
+      if (liveFace(p, showLit)) live |= 1 << i;
+    });
+    rust.extras_state(on, live);
+    rust.pressed(pressedCode(plates));
+    return rustPixels(rust.row(layer));
   }
 
   function drawRow(plates = layout()) {
-    ctx.fillStyle = COLOR.background;
-    ctx.fillRect(0, 0, W, H);
-    for (const p of plates) {
-      if (p.slider) drawSlider(p);
-      else if (p.extra) drawExtra(p);
-      else drawKey(p);
-    }
+    ctx.putImageData(renderRow(plates), 0, 0);
   }
 
-  // ---- Meters (src/meters.rs, with sample data) ---------------------------------------------
+  // ---- Meters: made-up readings, fed to the renderer's own meters (src/meters.rs) ----------
+  // Each reading in the meter's own units (Meter::push_sample), by ExtraIcon::NAMES index.
 
-  const COLUMN = 2;
-  const PALETTE = {
-    cpu: [[16, 30, 54], [70, 150, 235], [235, 110, 90]],
-    mem: [[38, 22, 52], [180, 110, 240], [100, 70, 130]],
-    disk: [[50, 36, 12], [240, 190, 70], [240, 110, 60]],
-    net: [[12, 40, 46], [70, 215, 220], [235, 140, 200]],
-    vpn: [[16, 56, 30], [100, 220, 130], [225, 225, 120]],
-    fan: [[14, 34, 50], [80, 180, 240], [160, 125, 245]],
-    temp: [[48, 26, 14], [240, 150, 60], [240, 60, 50]],
-    battery: [[30, 33, 38], [125, 133, 146], [125, 133, 146]],
-    batteryPowered: [[16, 56, 30], [100, 220, 130], [100, 220, 130]],
-    batteryLow: [[56, 40, 10], [240, 175, 50], [240, 175, 50]],
-    batteryCritical: [[60, 16, 14], [235, 75, 60], [235, 75, 60]],
-  };
-  const css = (c) => rgb(c[0], c[1], c[2]);
-
-  function formatRate(bytes) {
-    let value = Math.max(0, bytes);
-    let unit = 0;
-    while (Math.round(value) >= 1000 && unit < 3) {
-      value /= 1000;
-      unit += 1;
-    }
-    const suffix = ['B', 'kB', 'MB', 'GB'][unit];
-    if (unit === 0 || value >= 99.95) return `${value.toFixed(0)}${suffix}`;
-    if (value >= 9.995) return `${value.toFixed(1)}${suffix}`;
-    return `${value.toFixed(2)}${suffix}`;
-  }
-  const formatHours = (hours) => {
-    const minutes = Math.round(Math.max(0, hours) * 60);
-    return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}`;
-  };
-
-  class Meter {
-    constructor(kind) {
-      this.kind = kind;
-      this.history = []; // [first, second], oldest first
-      this.capacity = 91;
-      this.scale = kind === 'cpu' || kind === 'mem' ? 100 : 1;
-      this.charging = true;
-      this.level = 0.68;
-      this.hours = 0.75;
-    }
-
-    push(first, second) {
-      this.history.push([first, second]);
-      if (this.history.length > this.capacity) this.history.shift();
-      if (this.kind === 'disk' || this.kind === 'net' || this.kind === 'vpn') {
-        const floor = this.kind === 'disk' ? 256 * 1024 : 32 * 1024;
-        const peak = Math.max(floor, ...this.history.map(([a, b]) => a + b));
-        this.scale = peak > this.scale ? peak : this.scale * 0.96 + peak * 0.04;
-      }
-    }
-
-    mean(part) {
-      const recent = this.history.slice(-4);
-      return recent.reduce((sum, s) => sum + s[part], 0) / Math.max(1, recent.length);
-    }
-
-    palette() {
-      return this.ownPalette().map(tint);
-    }
-
-    ownPalette() {
-      if (this.kind !== 'battery') return PALETTE[this.kind];
-      if (this.charging) return PALETTE.batteryPowered;
-      if (this.level <= 0.1) return PALETTE.batteryCritical;
-      if (this.level <= 0.2) return PALETTE.batteryLow;
-      return PALETTE.battery;
-    }
-
-    draw(x, width) {
-      const [background, lower, upper] = this.palette();
-      ctx.fillStyle = css(background);
-      ctx.fillRect(x, 0, width, H);
-      if (this.kind === 'fan') this.drawLines(x, width, lower, upper);
-      else this.drawGraph(x, width, lower, upper);
-      this.drawValue(x, width, background, lower, upper);
-    }
-
-    normalized(sample) {
-      if (this.kind === 'temp') {
-        const hot = 80;
-        return [Math.min(sample[0], hot) / 100, Math.max(0, sample[0] - hot) / 100];
-      }
-      const first = Math.min(1, Math.max(0, sample[0] / this.scale));
-      const second = Math.min(1 - first, Math.max(0, sample[1] / this.scale));
-      return [first, second];
-    }
-
-    drawGraph(x, width, lower, upper) {
-      const n = this.history.length;
-      for (let column = 0; column < n; column += 1) {
-        const [first, second] = this.normalized(this.history[n - 1 - column]);
-        const right = x + width - column * COLUMN;
-        const low = Math.round(first * H);
-        const high = Math.round((first + second) * H);
-        ctx.fillStyle = css(lower);
-        ctx.fillRect(right - COLUMN, H - low, COLUMN, low);
-        ctx.fillStyle = css(upper);
-        ctx.fillRect(right - COLUMN, H - high, COLUMN, high - low);
-      }
-    }
-
-    drawLines(x, width, right, left) {
-      const low = 2000 * 0.9;
-      const high = 5927;
-      const rowOf = (rpm) => Math.round((1 - Math.min(1, Math.max(0, (rpm - low) / (high - low)))) * (H - 2));
-      for (const [part, color] of [[1, right], [0, left]]) {
-        ctx.fillStyle = css(color);
-        let previous = null;
-        const skipped = this.capacity - this.history.length;
-        this.history.forEach((sample, column) => {
-          const y = rowOf(sample[part]);
-          const top = previous === null ? y : Math.min(previous, y);
-          const bottom = previous === null ? y : Math.max(previous, y);
-          previous = y;
-          const left = x + (skipped + column) * COLUMN - (this.capacity * COLUMN - width);
-          ctx.fillRect(left, top, COLUMN, bottom + 2 - top);
-        });
-      }
-    }
-
-    lines(lower, upper) {
-      const white = [255, 255, 255];
-      switch (this.kind) {
-        case 'cpu': return [[`${Math.round(this.mean(0) + this.mean(1))}%`, white]];
-        case 'mem': return [[`${Math.round(this.mean(0))}%`, white]];
-        case 'temp': {
-          const celsius = this.mean(0);
-          return [[fahrenheit ? `${Math.round(celsius * 1.8 + 32)}°F` : `${Math.round(celsius)}°C`, white]];
-        }
-        case 'fan': return [[`${Math.round(this.mean(0))}`, upper], [`${Math.round(this.mean(1))}`, lower]];
-        case 'battery': return [[`${Math.round(this.level * 100)}%`, white], [formatHours(this.hours), lower]];
-        default: return [[formatRate(this.mean(1)), upper], [formatRate(this.mean(0)), lower]];
-      }
-    }
-
-    drawValue(x, width, background, lower, upper) {
-      if (!this.history.length) return;
-      const lines = this.lines(lower, upper);
-      const size = lines.length === 1 ? 24 : 18;
-      const lineHeight = lines.length === 1 ? 17 : 13;
-      const gap = 6;
-      const block = lines.length * lineHeight + (lines.length - 1) * gap;
-      let top = (H - block) / 2;
-      ctx.font = `500 ${size}px ${VALUE_FONT}`;
-      ctx.letterSpacing = lines.length === 1 ? '2px' : '1px';
-      ctx.textAlign = 'right';
-      ctx.textBaseline = 'alphabetic';
-      ctx.lineJoin = 'round';
-      for (const [text, color] of lines) {
-        const baseline = top + lineHeight;
-        // A black halo 2 px all round (meters.rs HALO, HALO_RADIUS), so values read over any graph.
-        ctx.lineWidth = 4.5;
-        ctx.strokeStyle = '#000';
-        ctx.strokeText(text, x + width - 8 + 2, baseline);
-        ctx.fillStyle = css(color);
-        ctx.fillText(text, x + width - 8 + 2, baseline);
-        top += lineHeight + gap;
-      }
-      ctx.letterSpacing = '0px';
-    }
-  }
-
-  const meters = {};
-  for (const kind of ['vpn', 'cpu', 'temp', 'fan', 'mem', 'disk', 'net', 'battery']) {
-    meters[kind] = new Meter(kind);
-  }
-
-  // Sample data: smooth random walks, with the CPU (and so temperature and fans) busier
-  // while you play with the page.
+  const METER = { vpn: 2, cpu: 3, mem: 4, disk: 5, net: 6, fan: 9 };
   const sim = { busy: 0, load: 0.1, temp: 50, fans: [2400, 2250], mem: 41, disk: 0, net: 60e3, vpn: 20e3 };
   const real = { battery: null };
+  const battery = { level: 0.68, charging: true, hours: 0.75 }; // made up, unless the browser shares it
   const jitter = (amount) => (Math.random() - 0.5) * 2 * amount;
 
   function sample() {
+    if (!rust) return;
     sim.busy *= 0.9;
     const target = 0.07 + 0.55 * Math.min(1, sim.busy) + (Math.random() < 0.06 ? 0.3 * Math.random() : 0);
     sim.load += (target - sim.load) * 0.35;
     const load = Math.max(0.02, Math.min(0.98, sim.load + jitter(0.03)));
-    meters.cpu.push(load * 72, load * 28);
+    rust.meter_sample(METER.cpu, load * 0.72, load * 0.28);
     sim.temp += (46 + load * 48 - sim.temp) * 0.08 + jitter(0.4);
-    meters.temp.push(sim.temp, 0);
+    rust.meter_celsius(sim.temp);
     const heat = Math.max(0, Math.min(1, (sim.temp - 48) / 40));
     sim.fans[0] += (2160 + heat * 3600 - sim.fans[0]) * 0.1 + jitter(25);
     sim.fans[1] += (2000 + heat * 3300 - sim.fans[1]) * 0.1 + jitter(25);
-    meters.fan.push(sim.fans[0], sim.fans[1]);
+    rust.meter_sample(METER.fan, sim.fans[0], sim.fans[1]);
     sim.mem += (41 + 6 * Math.min(1, sim.busy) - sim.mem) * 0.05 + jitter(0.15);
-    meters.mem.push(sim.mem, 22 + jitter(0.3));
+    rust.meter_sample(METER.mem, sim.mem / 100, (22 + jitter(0.3)) / 100);
     const burst = Math.random() < 0.08;
-    meters.disk.push(burst ? 2e6 * Math.random() : 15e3 * Math.random(),
+    rust.meter_sample(METER.disk, burst ? 2e6 * Math.random() : 15e3 * Math.random(),
       Math.random() < 0.12 ? 1.2e6 * Math.random() : 8e3 * Math.random());
     sim.net = Math.max(2e3, sim.net * (0.85 + 0.3 * Math.random()) + (Math.random() < 0.05 ? 400e3 * Math.random() : 0));
-    meters.net.push(sim.net, sim.net * (0.15 + 0.2 * Math.random()));
+    rust.meter_sample(METER.net, sim.net, sim.net * (0.15 + 0.2 * Math.random()));
     // Bursts that rise and settle, like real traffic, rather than noise.
     sim.vpnRaw = Math.max(1e3, (sim.vpnRaw ?? 20e3) * (0.9 + 0.2 * Math.random()) + (Math.random() < 0.04 ? 80e3 * Math.random() : 0));
     sim.vpn = sim.vpn * 0.75 + sim.vpnRaw * 0.25;
-    meters.vpn.push(sim.vpn, sim.vpn * (0.4 + 0.4 * Math.random()));
-    const battery = meters.battery;
+    rust.meter_sample(METER.vpn, sim.vpn, sim.vpn * (0.4 + 0.4 * Math.random()));
     if (real.battery) {
       const b = real.battery;
       battery.level = b.level;
@@ -596,10 +306,15 @@
       battery.level = Math.min(1, battery.level + 0.0004);
       battery.hours = Math.max(0, (1 - battery.level) * 2.3);
     }
-    battery.push(battery.level * battery.scale, 0);
+    rust.battery(battery.level, battery.charging ? 1 : 0, Number.isFinite(battery.hours) ? battery.hours : -1);
   }
-  for (let i = 0; i < 91; i += 1) sample();
-  setInterval(sample, 250);
+  /** Once the drawing code is loaded: the fans' ranges (the tested laptop's), a full graph. */
+  function startMeters() {
+    rust.fan_ranges(2160, 5927, 2000, 5489);
+    rust.fahrenheit(fahrenheit ? 1 : 0);
+    for (let i = 0; i < 91; i += 1) sample();
+    setInterval(sample, 250);
+  }
   if (navigator.getBattery) {
     navigator.getBattery().then((b) => { real.battery = b; }).catch(() => {});
   }
@@ -610,12 +325,26 @@
     video: null,
     stream: null,
     ready: false,
+    starting: false,
     async start() {
+      this.starting = true;
+      try {
+        await this.open();
+      } finally {
+        this.starting = false;
+      }
+    },
+    async open() {
       this.stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 360 }, audio: false });
       this.video = document.createElement('video');
       this.video.muted = true;
       this.video.playsInline = true;
       this.video.srcObject = this.stream;
+      // On the page (tiny and nearly invisible): browsers slow a video that isn't to about
+      // a frame a second, and the bar copies its frames.
+      this.video.className = 'camera-source';
+      this.video.setAttribute('aria-hidden', 'true');
+      document.body.append(this.video);
       await this.video.play();
       this.ready = true;
     },
@@ -623,86 +352,68 @@
       this.stream?.getTracks().forEach((t) => t.stop());
       this.stream = null;
       this.ready = false;
+      this.video?.remove();
+      rust?.camera_ready(0);
     },
-    draw(x, width) {
+    /** The test screen's camera picture, at the size it asks for (width << 16 | height). */
+    testCanvas: document.createElement('canvas'),
+    feedTest(size) {
+      const width = size >> 16;
+      const height = size & 0xffff;
+      if (!width || !height) return;
+      const canvas = this.testCanvas;
+      if (canvas.width !== width || canvas.height !== height) Object.assign(canvas, { width, height });
+      const g = canvas.getContext('2d', { willReadFrequently: true });
+      this.cover(g, width, height);
+      const picture = g.getImageData(0, 0, width, height).data;
+      new Uint8Array(rust.memory.buffer, rust.test_camera_buffer(), picture.length).set(picture);
+      rust.test_camera_commit();
+    },
+    /** The video into a width x height canvas: its full width, a band through the middle, mirrored. */
+    cover(g, width, height) {
       const v = this.video;
       const vw = v.videoWidth || 640;
       const vh = v.videoHeight || 360;
-      // Cover the plate: the full width of the picture, a band through its middle.
-      const bandHeight = (vw * H) / width;
-      ctx.save();
-      ctx.translate(x + width, 0);
-      ctx.scale(-1, 1); // mirrored, like a selfie view
-      if (theme.hues === 'grey') ctx.filter = 'grayscale(1)'; // mono: a grey picture too
-      ctx.drawImage(v, 0, Math.max(0, (vh - bandHeight) / 2), vw, Math.min(vh, bandHeight), 0, 0, width, H);
-      ctx.restore();
+      const bandHeight = (vw * height) / width;
+      g.save();
+      g.translate(width, 0);
+      g.scale(-1, 1);
+      g.drawImage(v, 0, Math.max(0, (vh - bandHeight) / 2), vw, Math.min(vh, bandHeight), 0, 0, width, height);
+      g.restore();
+    },
+    /** The picture for the camera button, 182x60, handed to the drawing code each frame. */
+    canvas: Object.assign(document.createElement('canvas'), { width: EXTRA_WIDTH, height: H }),
+    update() {
+      if (!this.ready || !rust) return;
+      const g = this.canvas.getContext('2d', { willReadFrequently: true });
+      this.cover(g, EXTRA_WIDTH, H);
+      const picture = g.getImageData(0, 0, EXTRA_WIDTH, H).data;
+      new Uint8Array(rust.memory.buffer, rust.camera_buffer(), picture.length).set(picture);
+      rust.camera_ready(1);
     },
   };
-
-  const MIC = { background: [16, 56, 30], bottom: [58, 164, 92], top: [150, 235, 170], peak: [220, 255, 225] };
-  const BANDS = 24;
-
-  // 24 log-spaced bands from 80 Hz to 8 kHz with falling peaks, drawn like src/extras.rs
-  // draw_mic_spectrum. Shared by the mic button and the playing play/pause button.
-  class Spectrum {
-    constructor() {
-      this.levels = new Array(BANDS).fill(0);
-      this.peaks = new Array(BANDS).fill(0);
-    }
-    update(analyser, sampleRate) {
-      if (!this.data || this.data.length !== analyser.frequencyBinCount) {
-        this.data = new Float32Array(analyser.frequencyBinCount);
-      }
-      analyser.getFloatFrequencyData(this.data);
-      const nyquist = sampleRate / 2;
-      const bins = this.data.length;
-      for (let band = 0; band < BANDS; band += 1) {
-        const from = 80 * (8000 / 80) ** (band / BANDS);
-        const to = 80 * (8000 / 80) ** ((band + 1) / BANDS);
-        let peak = -Infinity;
-        for (let i = Math.floor((from / nyquist) * bins); i <= Math.ceil((to / nyquist) * bins); i += 1) {
-          peak = Math.max(peak, this.data[i] ?? -Infinity);
-        }
-        const level = Math.min(1, Math.max(0, (peak + 95) / 65));
-        this.levels[band] = Math.max(level, this.levels[band] * 0.82);
-        this.peaks[band] = Math.max(this.levels[band], this.peaks[band] - 0.012);
-      }
-    }
-    draw(x, width) {
-      ctx.fillStyle = css(tint(MIC.background));
-      ctx.fillRect(x, 0, width, H);
-      const pitch = 7;
-      const barWidth = 5;
-      const first = x + (width - BANDS * pitch) / 2 + (pitch - barWidth) / 2;
-      const gradient = ctx.createLinearGradient(0, H, 0, 0);
-      gradient.addColorStop(0, css(tint(MIC.bottom)));
-      gradient.addColorStop(1, css(tint(MIC.top)));
-      for (let bar = 0; bar < BANDS; bar += 1) {
-        const left = first + bar * pitch;
-        const height = Math.round(this.levels[bar] * H);
-        ctx.fillStyle = gradient;
-        ctx.fillRect(left, H - height, barWidth, height);
-        if (this.peaks[bar] > 0.02) {
-          ctx.fillStyle = css(tint(MIC.peak));
-          ctx.fillRect(left, H - Math.round(this.peaks[bar] * H) - 1, barWidth, 1);
-        }
-      }
-    }
-  }
 
   const mic = {
     stream: null,
     context: null,
     analyser: null,
     ready: false,
-    spectrum: new Spectrum(),
+    starting: false,
     async start() {
+      this.starting = true;
+      try {
+        await this.open();
+      } finally {
+        this.starting = false;
+      }
+    },
+    async open() {
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      this.context = new AudioContext();
+      // 48 kHz, as the bar listens, so the spectrum's bands land on the same notes.
+      this.context = new AudioContext({ sampleRate: 48000 });
       const source = this.context.createMediaStreamSource(this.stream);
       this.analyser = this.context.createAnalyser();
       this.analyser.fftSize = 2048;
-      this.analyser.smoothingTimeConstant = 0.5;
       source.connect(this.analyser);
       this.ready = true;
     },
@@ -712,13 +423,17 @@
       this.stream = null;
       this.ready = false;
     },
-    update() {
-      if (this.ready) this.spectrum.update(this.analyser, this.context.sampleRate);
-    },
-    draw(x, width) {
-      this.spectrum.draw(x, width);
+    /** The latest samples to the drawing code's spectrum (src/spectrum.rs). */
+    update(dt) {
+      if (this.ready && rust) feedAudio(0, this.analyser, dt);
     },
   };
+
+  /** The analyser's latest 2048 samples into the drawing code's audio buffer `which`. */
+  function feedAudio(which, analyser, dt) {
+    analyser.getFloatTimeDomainData(new Float32Array(rust.memory.buffer, rust.audio_buffer(which), 2048));
+    rust.audio_update(which, dt);
+  }
 
   // ---- Music for the play/pause button ------------------------------------------------------
   // The real bar lights play/pause green while a media player plays and shows a spectrum of
@@ -752,16 +467,14 @@
     nextTime: 0,
     timer: 0,
     gain: -1,
-    spectrum: new Spectrum(),
     setup() {
       if (this.context) return;
-      this.context = new AudioContext();
+      this.context = new AudioContext({ sampleRate: 48000 });
       const c = this.context;
       this.bus = c.createGain();
       this.bus.gain.value = 0.5;
       this.analyser = c.createAnalyser();
       this.analyser.fftSize = 2048;
-      this.analyser.smoothingTimeConstant = 0.5;
       this.output = c.createGain();
       this.output.gain.value = 0;
       // Before the volume, like the sink monitor fnstrip listens to.
@@ -791,15 +504,15 @@
       this.track = (this.track + by + TRACKS.length) % TRACKS.length;
       if (this.playing) this.play();
     },
-    // Follows the page's volume slider and mute.
-    update() {
+    // Follows the page's volume slider and mute; hands what's playing to the spectrum.
+    update(dt) {
       if (!this.context) return;
       const target = this.playing && !state.muted ? 0.9 * (state.levels.volume / 100) ** 2 : 0;
       if (Math.abs(target - this.gain) > 0.001) {
         this.output.gain.setTargetAtTime(target, this.context.currentTime, 0.03);
         this.gain = target;
       }
-      if (this.playing) this.spectrum.update(this.analyser, this.context.sampleRate);
+      if (this.playing && rust) feedAudio(1, this.analyser, dt);
     },
     schedule() {
       const t = TRACKS[this.track];
@@ -1150,275 +863,81 @@
   window.addEventListener('blur', fnRelease);
   document.addEventListener('pointermove', () => { sim.busy += 0.004; }, { passive: true });
 
-  // ---- The test screen (a small taste of src/screensaver.rs) --------------------------------
-  // Triple-tap fn and hold. The bar's version has more scenes, live audio spectra and the
-  // camera; this one shows the idea: full-colour animation with its frame rate and render time.
-  // Tap the bar for the next scene, its right end (or fn) to leave.
+  // ---- The test screen: the renderer's own (src/screensaver.rs) ---------------------------
+  // Triple-tap fn and hold. Its scenes, frame-rate and render-time stats, buffer counts and
+  // tap zones are the bar's own code, timed by this browser. The
+  // page supplies what a scene asks for: your mic, what's playing (the tune), your camera. The
+  // CPU figures read the bar's /proc, so here they show "-".
 
   const testScreen = {
     running: false,
-    scene: 0,
-    frames: [],
-    renderMs: 0,
-    small: Object.assign(document.createElement('canvas'), { width: 434, height: 12 }),
+    usingMic: false,
+    usingCamera: false,
     start() {
+      if (!rust) return;
+      rust.test_start();
       this.running = true;
-      this.scene = 0;
-      this.frames = [];
-      say('<b>test screen</b>: tap for the next scene, the right end (or fn) to leave <span class="cmd">(debug_gestures = "on")</span>');
+      say('<b>test screen</b>: tap the left end for the next scene, the stats for the buffer count, anywhere else (or fn) to leave <span class="cmd">(debug_gestures = "on")</span>');
     },
     stop() {
+      if (!this.running) return;
       this.running = false;
+      rust?.test_stop();
+      this.letGo();
+    },
+    /** Stops the mic or camera if only the test screen had started them. */
+    letGo(wants = 0) {
+      if (this.usingMic && !(wants & 1)) {
+        if (!state.lit.mic) mic.stop();
+        this.usingMic = false;
+      }
+      if (this.usingCamera && !(wants & 4)) {
+        if (!state.lit.camera) camera.stop();
+        this.usingCamera = false;
+      }
     },
     tap(x) {
-      if (x > W - 220) this.stop();
-      else this.scene = (this.scene + 1) % 3;
+      const zone = rust.test_zone(Math.max(0, Math.round(x)));
+      if (zone === 0) rust.test_next_scene();
+      else if (zone === 1) rust.test_next_buffering();
+      else this.stop();
     },
-    draw(now) {
-      const started = performance.now();
-      const t = now / 1000;
-      if (this.scene === 0) {
-        // Plasma, computed small and scaled up.
-        const g = this.small.getContext('2d');
-        const image = g.createImageData(434, 12);
-        for (let y = 0; y < 12; y += 1) {
-          for (let x = 0; x < 434; x += 1) {
-            const v = Math.sin(x / 16 + t * 2) + Math.sin((x + y * 8) / 23 - t * 1.4) + Math.sin(Math.hypot(x - 217 + 120 * Math.sin(t / 2), y * 9) / 11 - t * 2.6);
-            const [r, gr, b] = hsv((v * 60 + t * 40) % 360 + 360, 0.9, 0.95);
-            const i = (y * 434 + x) * 4;
-            image.data[i] = r; image.data[i + 1] = gr; image.data[i + 2] = b; image.data[i + 3] = 255;
-          }
-        }
-        g.putImageData(image, 0, 0);
-        ctx.imageSmoothingEnabled = true;
-        ctx.drawImage(this.small, 0, 0, W, H);
-      } else if (this.scene === 1) {
-        // Colour bars racing along.
-        for (let x = 0; x < W; x += 31) {
-          ctx.fillStyle = `hsl(${(x / 3 + t * 220) % 360}, 90%, ${45 + 15 * Math.sin(x / 90 - t * 5)}%)`;
-          ctx.fillRect(x, 0, 31, H);
-        }
-      } else {
-        // A pulse running the length of the bar.
-        ctx.fillStyle = '#000';
-        ctx.fillRect(0, 0, W, H);
-        for (let i = 0; i < 6; i += 1) {
-          const cx = ((t * 600 + i * 380) % (W + 200)) - 100;
-          const glow = ctx.createRadialGradient(cx, H / 2, 0, cx, H / 2, 140);
-          glow.addColorStop(0, `hsla(${i * 60 + t * 50}, 100%, 65%, 1)`);
-          glow.addColorStop(1, 'hsla(0, 0%, 0%, 0)');
-          ctx.fillStyle = glow;
-          ctx.fillRect(cx - 140, 0, 280, H);
+    draw(dt) {
+      const wants = rust.test_wants();
+      this.letGo(wants);
+      if (wants & 1 && !mic.ready && !mic.starting) {
+        this.usingMic = true;
+        mic.start().catch(() => say('<b>mic scene</b>: the browser didn\'t allow the mic'));
+      }
+      if (wants & 2 && !music.playing) {
+        // Nothing playing: silence (tap play first for something to see).
+        new Float32Array(rust.memory.buffer, rust.audio_buffer(1), 2048).fill(0);
+        rust.audio_update(1, dt);
+      }
+      if (wants & 4) {
+        if (!camera.ready && !camera.starting) {
+          this.usingCamera = true;
+          camera.start().catch(() => say('<b>camera scene</b>: the browser didn\'t allow the camera'));
+        } else if (camera.ready) {
+          camera.feedTest(rust.test_camera_size());
         }
       }
-      this.renderMs = this.renderMs * 0.9 + (performance.now() - started) * 0.1;
-      this.frames.push(now);
-      while (this.frames.length && now - this.frames[0] > 1000) this.frames.shift();
-      // The stats, at the right end, as the bar shows them.
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.78)';
-      ctx.fillRect(W - 220, 0, 220, H);
-      ctx.fillRect(0, 0, 64, H);
-      ctx.fillStyle = '#f2f2f2';
-      ctx.font = '500 20px "JetBrains Mono", monospace';
-      ctx.textBaseline = 'middle';
-      ctx.textAlign = 'left';
-      ctx.fillText(`${this.scene + 1}/3`, 12, H / 2);
-      ctx.fillText(`${this.frames.length} FPS`, W - 206, H / 2 - 12);
-      ctx.fillText(`${this.renderMs.toFixed(1)} MS`, W - 206, H / 2 + 12);
-      ctx.fillStyle = '#ff6b5a';
-      ctx.fillText('EXIT', W - 70, H / 2);
+      const pointer = rust.test_frame();
+      if (pointer) ctx.putImageData(rustPixels(pointer), 0, 0);
+      rust.test_tick();
     },
   };
 
-  // ---- The startup animation (a port of src/intro.rs) ---------------------------------------
+  // ---- The startup animation: the renderer's own (src/intro.rs), over the row ---------------
 
-  const DURATION = 1.8;
-  const COLLISION = 0.42;
-  const LOGO_IN = [0.42, 0.62];
-  const LOGO_COOL = [0.45, 0.95];
-  const SHIMMER = [0.7, 1.05];
-  const LOGO_OUT = [1.1, 1.4];
-  const REVEAL = [1.05, 1.65];
-  const AFTERGLOW_OUT = [1.1, 1.6];
-  const CYAN = [0, 0.78, 1];
-  const MAGENTA = [1, 0.24, 0.78];
-  const WARM_WHITE = [1, 0.95, 0.88];
-  const HALO_PAD = 12;
-  const FEATHER = 30;
-
-  const gauss = (offset, width) => Math.exp(-((offset / width) ** 2));
-  const smooth = ([a, b], t) => {
-    const x = Math.min(1, Math.max(0, (t - a) / (b - a)));
-    return x * x * (3 - 2 * x);
-  };
-  const lerp3 = (from, to, amount) => [0, 1, 2].map((c) => from[c] + (to[c] - from[c]) * amount);
-  function add(light, color, amount) {
-    light[0] += color[0] * amount;
-    light[1] += color[1] * amount;
-    light[2] += color[2] * amount;
-  }
-  function addHot(light, color, amount) {
-    add(light, color, amount);
-    const white = Math.max(0, amount - 0.6) * 1.2;
-    add(light, [1, 1, 1], white);
-  }
-
-  const intro = { running: false, start: 0, mask: null, halo: null, mw: 0, mh: 0 };
-
-  function prepareWordmark() {
-    const s = S.wordmark;
-    const c = document.createElement('canvas');
-    c.width = s.w;
-    c.height = s.h;
-    const g = c.getContext('2d');
-    g.drawImage(sprites, s.x, 0, s.w, s.h, 0, 0, s.w, s.h);
-    const data = g.getImageData(0, 0, s.w, s.h).data;
-    intro.mw = s.w;
-    intro.mh = s.h;
-    intro.mask = new Float32Array(s.w * s.h);
-    for (let i = 0; i < intro.mask.length; i += 1) intro.mask[i] = data[i * 4 + 3] / 255;
-    const hw = s.w + 2 * HALO_PAD;
-    const hh = s.h + 2 * HALO_PAD;
-    const halo = new Float32Array(hw * hh);
-    for (let y = 0; y < s.h; y += 1) {
-      for (let x = 0; x < s.w; x += 1) halo[(y + HALO_PAD) * hw + x + HALO_PAD] = intro.mask[y * s.w + x];
-    }
-    const blur = (start, step, count) => {
-      const out = new Float32Array(count);
-      for (let i = 0; i < count; i += 1) {
-        let sum = 0;
-        for (let j = Math.max(0, i - 3); j <= Math.min(count - 1, i + 3); j += 1) sum += halo[start + j * step];
-        out[i] = sum / 7;
-      }
-      for (let i = 0; i < count; i += 1) halo[start + i * step] = out[i];
-    };
-    for (let pass = 0; pass < 3; pass += 1) {
-      for (let y = 0; y < hh; y += 1) blur(y * hw, 1, hw);
-      for (let x = 0; x < hw; x += 1) blur(x, hw, hh);
-    }
-    let brightest = 0;
-    for (const v of halo) brightest = Math.max(brightest, v);
-    for (let i = 0; i < halo.length; i += 1) halo[i] /= brightest || 1;
-    intro.halo = halo;
-  }
-
+  let DURATION = 1.8; // seconds; the renderer's own once loaded
+  const intro = { running: false, start: 0, frozen: undefined };
+  /** The animation at `t` seconds, over the row last drawn. */
   function drawIntro(t) {
-    const image = ctx.getImageData(0, 0, W, H);
-    const px = image.data;
-    const center = W / 2;
-    const middle = (H - 1) / 2;
-    const thinProfile = new Float32Array(H);
-    const broadProfile = new Float32Array(H);
-    for (let y = 0; y < H; y += 1) {
-      thinProfile[y] = gauss(y - middle, 3.5) + 0.35 * gauss(y - middle, 14);
-      broadProfile[y] = 0.7 + 0.3 * gauss(y - middle, 18);
-    }
-    const thin = new Float32Array(W * 3);
-    const broad = new Float32Array(W * 3);
-    const uncovered = new Float32Array(W);
-    const afterglow = 1 - smooth(AFTERGLOW_OUT, t);
-    const since = t - COLLISION;
-    const reveal = smooth(REVEAL, t);
-    const logoHalf = intro.mw / 2 + 10;
-    const radius = logoHalf + (1 - (1 - reveal) ** 3) * (center + 80 - logoHalf);
-    const logoGone = smooth([LOGO_OUT[1] - 0.05, LOGO_OUT[1] + 0.15], t);
-    const fronts = t < REVEAL[0] ? 0
-      : smooth([REVEAL[0], REVEAL[0] + 0.05], t) * (1 - smooth([REVEAL[1] - 0.12, REVEAL[1]], t));
-    const light = [0, 0, 0];
-    const lightBroad = [0, 0, 0];
-
-    for (let x = 0; x < W; x += 1) {
-      const column = x + 0.5;
-      const distance = Math.abs(column - center);
-      const side = column < center ? CYAN : MAGENTA;
-      light[0] = light[1] = light[2] = 0;
-      lightBroad[0] = lightBroad[1] = lightBroad[2] = 0;
-      if (t < COLLISION) {
-        const progress = t / COLLISION;
-        const headDistance = (1 - progress * progress) * (center + 60);
-        const fadeIn = Math.min(1, progress * 4);
-        const pastHead = headDistance - distance;
-        const beam = pastHead >= 0 ? Math.exp(-pastHead / 10) : Math.exp(pastHead / 260);
-        addHot(light, side, 1.4 * fadeIn * beam);
-      }
-      if (since >= 0) {
-        const strength = (1 - Math.exp(-since / 0.03)) * Math.exp(-since / 0.22) * afterglow;
-        const spread = 60 + 1400 * since;
-        addHot(lightBroad, WARM_WHITE, 1.3 * strength * gauss(distance, spread) + 0.12 * strength);
-        add(light, lerp3(CYAN, MAGENTA, column / W), 0.55 * Math.exp(-since / 0.35) * afterglow);
-      }
-      if (t >= REVEAL[0]) {
-        const toFront = distance - radius;
-        const front = gauss(toFront, 26) + (toFront < 0 ? 0.35 * Math.exp(toFront / 120) : 0);
-        addHot(lightBroad, side, 1.3 * fronts * front);
-        uncovered[x] = Math.min(1, Math.max(0, 0.5 - toFront / FEATHER));
-        if (distance < logoHalf + FEATHER) uncovered[x] *= logoGone;
-      }
-      thin.set(light, x * 3);
-      broad.set(lightBroad, x * 3);
-    }
-
-    for (let y = 0; y < H; y += 1) {
-      const tp = thinProfile[y];
-      const bp = broadProfile[y];
-      for (let x = 0; x < W; x += 1) {
-        const i = (y * W + x) * 4;
-        const keep = uncovered[x];
-        for (let c = 0; c < 3; c += 1) {
-          const value = (px[i + c] / 255) * keep + thin[x * 3 + c] * tp + broad[x * 3 + c] * bp;
-          px[i + c] = Math.min(255, Math.max(0, value * 255));
-        }
-      }
-    }
-    drawWordmark(px, t);
-    ctx.putImageData(image, 0, 0);
-  }
-
-  function drawWordmark(px, t) {
-    const opacity = smooth(LOGO_IN, t) * (1 - smooth(LOGO_OUT, t));
-    if (opacity <= 0) return;
-    const { mw, mh } = intro;
-    const hw = mw + 2 * HALO_PAD;
-    const hh = mh + 2 * HALO_PAD;
-    const left = Math.floor((W - mw) / 2);
-    const top = Math.floor((H - mh) / 2);
-    const whiteHot = Math.max(1 - smooth(LOGO_COOL, t), Math.sqrt(smooth(LOGO_OUT, t)));
-    const glow = opacity * (0.45 + 0.75 * whiteHot);
-    const shimmering = t > SHIMMER[0] && t < SHIMMER[1];
-    const shimmerAt = -0.2 + 1.4 * smooth(SHIMMER, t);
-    for (let hy = 0; hy < hh; hy += 1) {
-      const y = top + hy - HALO_PAD;
-      if (y < 0 || y >= H) continue;
-      for (let hx = 0; hx < hw; hx += 1) {
-        const x = left + hx - HALO_PAD;
-        if (x < 0 || x >= W) continue;
-        const across = (hx - HALO_PAD) / mw;
-        const tint = lerp3(CYAN, MAGENTA, Math.min(1, Math.max(0, across)));
-        const halo = intro.halo[hy * hw + hx] * glow;
-        const mx = hx - HALO_PAD;
-        const my = hy - HALO_PAD;
-        const ink = (mx >= 0 && my >= 0 && mx < mw && my < mh ? intro.mask[my * mw + mx] : 0) * opacity;
-        let letters = lerp3(tint, [1, 1, 1], 0.25 + 0.75 * whiteHot);
-        if (shimmering) {
-          const slant = across + 0.15 * (hy / hh);
-          letters = lerp3(letters, [1, 1, 1], gauss(slant - shimmerAt, 0.06));
-        }
-        const i = (y * W + x) * 4;
-        for (let c = 0; c < 3; c += 1) {
-          const below = px[i + c] / 255 + tint[c] * halo;
-          px[i + c] = Math.min(255, Math.max(0, (below * (1 - ink) + letters[c] * ink) * 255));
-        }
-      }
-    }
+    if (rust) ctx.putImageData(rustPixels(rust.intro(Math.round(t * 1000))), 0, 0);
   }
 
   function playIntro() {
-    try {
-      if (!intro.mask) prepareWordmark();
-    } catch (error) {
-      console.error(error);
-      return;
-    }
     state.extras = false;
     intro.running = true;
     intro.start = performance.now();
@@ -1505,15 +1024,33 @@
   scrub.addEventListener('pointerup', endScrub);
   scrub.addEventListener('pointercancel', endScrub);
 
+  /** No live bar here: recordings and pictures instead (index.html's .fallback-only). */
+  function fallBack(error) {
+    if (error) console.error(error);
+    rust = null;
+    document.documentElement.classList.add('no-live');
+    for (const video of document.querySelectorAll('video.fallback-only')) {
+      video.preload = 'auto';
+      video.play().catch(() => {});
+    }
+  }
+
+  let lastFrame = null;
+  let failures = 0;
   function loop(now) {
     requestAnimationFrame(loop); // first, so one bad frame can't stop the bar
     try {
       layoutDisplay();
-      mic.update();
-      music.update();
-      if (testScreen.running) testScreen.draw(now);
+      const dt = Math.min(0.1, (now - (lastFrame ?? now)) / 1000);
+      lastFrame = now;
+      mic.update(dt);
+      music.update(dt);
+      camera.update();
+      if (testScreen.running) testScreen.draw(dt);
       else drawRow();
-      if (intro.frozen !== undefined) {
+      if (testScreen.running) {
+        // The test screen owns the bar.
+      } else if (intro.frozen !== undefined) {
         drawIntro(intro.frozen);
       } else if (intro.running) {
         const t = (now - intro.start) / 1000;
@@ -1525,6 +1062,10 @@
       intro.running = false;
       intro.frozen = undefined;
       console.error(error);
+      // The drawing code itself failing over and over (not other page code): show the
+      // recordings instead.
+      if (error instanceof WebAssembly.RuntimeError) failures += 1;
+      if (failures > 30 && rust) fallBack(error);
     }
     present();
     if (builderVisible) drawBuilder();
@@ -1871,6 +1412,7 @@
     music.playing = false;
     state.pressed = null;
     state.lit.vpn = true;
+    themePlain = true;
     try {
       for (const [name, item] of Object.entries(gallery)) {
         applyTheme(name, true);
@@ -1885,6 +1427,7 @@
       music.playing = playing;
       state.pressed = pressed;
       state.lit.vpn = vpn;
+      themePlain = false;
       applyTheme(shown);
     }
   }
@@ -1902,12 +1445,13 @@
     for (const [n, chip] of Object.entries(chips)) chip.setAttribute('aria-pressed', String(n === themeName));
     for (const [n, item] of Object.entries(gallery)) item.classList.toggle('active', n === themeName);
     rebuild();
-    if (announce) say(`<b>theme = "${themeName}"</b> in the config`);
+    if (announce) say(`<b>theme = "${themeName}"</b> in the config. Double-tap fn (or <kbd>F</kbd>) to see it on your buttons and meters too.`);
   }
   themeSelect.addEventListener('change', () => setTheme(themeSelect.value));
   const unitSelect = document.getElementById('temperature-unit');
   unitSelect.addEventListener('change', () => {
     fahrenheit = unitSelect.value === 'f';
+    rust?.fahrenheit(fahrenheit ? 1 : 0);
     rebuild();
   });
 
@@ -1929,7 +1473,7 @@
       `startup_animation = "${startup.checked ? 'on' : 'off'}"`,
       `theme = "${themeName}"   # ${Object.keys(THEMES).join(', ')}`,
       `temperature_unit = "${fahrenheit ? 'f' : 'c'}"`,
-      `debug_gestures = "${debugGestures.checked ? 'on' : 'off'}"   # fn triple-tap-and-hold: test screen; quad-tap: next theme`,
+      `debug_gestures = "${debugGestures.checked ? 'on' : 'off'}"   # test screen, theme switching`,
     ];
     const changed = Object.keys(COLOR_KEYS).filter((key) => overrides[key]);
     if (changed.length) {
@@ -1989,7 +1533,10 @@
     }
   }
   const copyButton = document.getElementById('copy');
-  copyButton.addEventListener('click', () => copyText(configText(), copyButton, configOut));
+  copyButton.addEventListener('click', () => {
+    copyText(configText(), copyButton, configOut);
+    keptConfig = configText(); // copied: nothing to lose by leaving
+  });
   document.getElementById('download').addEventListener('click', (event) => {
     const link = document.createElement('a');
     link.href = URL.createObjectURL(new Blob([configText()], { type: 'application/toml' }));
@@ -1997,6 +1544,7 @@
     link.click();
     setTimeout(() => URL.revokeObjectURL(link.href), 1000);
     flash(event.currentTarget, 'Saved');
+    keptConfig = configText(); // downloaded: nothing to lose by leaving
   });
 
   /** The preview row and the tiles' faces, drawn with the bar's own code. */
@@ -2039,32 +1587,43 @@
   previewCanvas.addEventListener('pointerup', endDrag);
   previewCanvas.addEventListener('pointercancel', endDrag);
 
+  let tilesDrawn = -Infinity;
+  const lifted = Object.assign(document.createElement('canvas'), { width: EXTRA_WIDTH, height: H });
   function drawBuilder() {
     try {
       ctx = preview;
       if (drag) {
-        // The row without the dragged button, then the button lifted, under the finger.
-        drawRow(EXTRAS.filter((p) => p.id !== drag.name));
+        // The row with the dragged button's place empty, then the button lifted, under the finger.
         const p = EXTRAS.find((plate) => plate.id === drag.name);
+        const row = renderRow(EXTRAS);
+        ctx.putImageData(row, 0, 0);
+        ctx.fillStyle = COLOR.background;
+        ctx.fillRect(p.x, 0, p.w, H);
+        // The lifted button, cut into its own canvas so it can cast a glow.
+        lifted.getContext('2d').putImageData(row, -p.x, 0, p.x, 0, p.w, H);
         ctx.save();
         ctx.shadowColor = 'rgba(0, 199, 255, 0.8)';
         ctx.shadowBlur = 14;
-        drawExtra({ ...p, x: drag.x });
+        ctx.drawImage(lifted, drag.x, 0);
         ctx.restore();
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.roundRect(drag.x + 1, 1, EXTRA_WIDTH - 2, H - 2, RADIUS);
+        if (ctx.roundRect) ctx.roundRect(drag.x + 1, 1, EXTRA_WIDTH - 2, H - 2, RADIUS);
+        else ctx.rect(drag.x + 1, 1, EXTRA_WIDTH - 2, H - 2);
         ctx.stroke();
       } else {
         drawRow(EXTRAS);
       }
+      // The palette's tiles: each button cut from the whole row (toggles lit). Redrawn four
+      // times a second (the meters' rate), or at once while the camera or mic is live.
+      const now = performance.now();
+      if (now - tilesDrawn < 250 && !camera.ready && !mic.ready) return;
+      tilesDrawn = now;
+      const row = renderRow(SHOWCASE, true);
       for (const [name, { context }] of Object.entries(tiles)) {
-        ctx = context;
-        ctx.fillStyle = COLOR.background;
-        ctx.fillRect(0, 0, EXTRA_WIDTH, H);
-        const info = EXTRA_INFO[name];
-        drawExtra({ id: name, x: 0, w: EXTRA_WIDTH, icon: name, extra: info }, info.kind === 'toggle');
+        const p = SHOWCASE.find((plate) => plate.id === name);
+        context.putImageData(row, -p.x, 0, p.x, 0, EXTRA_WIDTH, H);
       }
     } finally {
       ctx = barContext;
@@ -2083,25 +1642,64 @@
   applyLevels();
   window.addEventListener('resize', layoutDisplay);
   const fonts = document.fonts ? document.fonts.ready : Promise.resolve();
-  const loaded = sprites.complete ? Promise.resolve() : new Promise((resolve) => { sprites.onload = resolve; });
   // For checking the drawing: ?row=function|extras shows that row, ?intro=0.8 freezes the
   // startup animation at 0.8 s, ?lit=vpn lights that toggle.
   const params = new URLSearchParams(location.search);
   if (params.get('row') === 'extras') state.extras = true;
   if (params.get('row') === 'function') state.fnDown = true;
   setTheme(params.get('theme') || 'default');
+  // The config as the page started; leaving with a different one (not yet copied or
+  // downloaded) asks first, so a row you've been trying out isn't lost by accident.
+  keptConfig = configText();
+  window.addEventListener('beforeunload', (event) => {
+    if (configText() === keptConfig) return;
+    event.preventDefault();
+    event.returnValue = '';
+  });
+  // "Try it on the bar": back up to the bar, showing your extras row.
+  for (const button of document.querySelectorAll('.try-it')) {
+    button.addEventListener('click', () => {
+      builderUsed = true;
+      if (testScreen.running) testScreen.stop();
+      state.extras = chosen.length > 0;
+      display.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      say(state.extras
+        ? '<b>your extras row</b>: tap your buttons, press fn to go back to the controls'
+        : '<b>no extras picked</b>: pick some buttons in the builder below');
+    });
+  }
+  // ?levels=35,50,30 sets brightness, keyboard and volume (for screenshots and tests).
+  const levels = (params.get('levels') || '').split(',').map(Number);
+  if (levels.length === 3 && levels.every((v) => v >= 0 && v <= 100)) {
+    [state.levels.brightness, state.levels.keyboard, state.levels.volume] = levels;
+    applyLevels();
+  }
   for (const name of (params.get('lit') || '').split(',')) {
     if (name === 'vpn') state.lit.vpn = true;
   }
   const frozen = params.has('intro') ? Number(params.get('intro')) : null;
 
-  Promise.all([fonts, loaded]).then(() => {
+  // fnstrip's own drawing code, embedded by tools/build_web.sh (works from file:// too).
+  // Without it (an older browser, or a failure), the page falls back to recordings.
+  const drawing = (typeof WebAssembly === 'object'
+    ? WebAssembly.instantiate(Uint8Array.from(atob(window.FNSTRIP_WASM || ''), (c) => c.charCodeAt(0)),
+      { env: { now_ms: () => performance.now() } }) // the clock fnstrip's code reads
+    : Promise.reject(new Error('no WebAssembly')))
+    .then(({ instance }) => {
+      rust = instance.exports;
+      rust.start();
+      DURATION = rust.intro_ms() / 1000;
+      startMeters();
+    })
+    .catch(fallBack);
+
+  Promise.all([fonts, drawing]).then(() => {
     drawGallery();
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (frozen !== null) {
       playIntro();
       intro.running = false;
-      if (intro.mask) intro.frozen = frozen;
+      intro.frozen = frozen;
     } else if (!reduced && !params.has('row')) {
       playIntro();
     }
@@ -2118,7 +1716,10 @@
     const repo = document.getElementById('repo');
     repo.href = repoUrl;
     repo.hidden = false;
-    for (const link of document.querySelectorAll('.repo-link')) link.href = repoUrl;
+    for (const link of document.querySelectorAll('.repo-link')) {
+      link.href = repoUrl;
+      link.hidden = false;
+    }
     document.querySelector('.repo-foot').hidden = false;
     // Step 2 starts from the source: the clone goes into its commands, so Copy takes it all.
     const clone = document.querySelector('.repo-clone');
@@ -2127,6 +1728,66 @@
       ', build it, and link it in:');
     const commands = clone.closest('li').querySelector('pre code');
     commands.textContent = `git clone ${repoUrl}.git\ncd fnstrip\n${commands.textContent}`;
+  }
+
+  // The latest release, from the fnstrip-version meta tag (filled in when published).
+  const version = document.querySelector('meta[name="fnstrip-version"]')?.content;
+  if (/^\d+\.\d+\.\d+$/.test(version || '')) {
+    for (const element of document.querySelectorAll('.version')) {
+      element.querySelector('.version-number').textContent = version;
+      const link = element.querySelector('.version-link');
+      link.href = repoUrl ? `${repoUrl}/releases/tag/v${version}` : '#install';
+      element.hidden = false;
+    }
+  }
+
+  // The recordings: each video loads and plays only while on screen (none load up front),
+  // and with reduced motion, just shows its first frame.
+  const stillOnly = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const recordings = document.querySelectorAll('.strip video');
+  if (stillOnly) {
+    recordings.forEach((v) => { v.preload = 'metadata'; });
+  } else {
+    const watcher = new IntersectionObserver((entries) => {
+      for (const { target, isIntersecting } of entries) {
+        if (isIntersecting) target.play().catch(() => {});
+        else target.pause();
+      }
+    }, { rootMargin: '120px 0px' });
+    recordings.forEach((v) => watcher.observe(v));
+  }
+
+  // The reference folds away on phones (each part opens with a tap); open on wider screens.
+  if (window.matchMedia('(max-width: 860px)').matches) {
+    document.querySelectorAll('details.ref').forEach((d) => { d.open = false; });
+  }
+
+  // A link to a folded FAQ answer (#other-macs) opens it.
+  function openLinkedAnswer() {
+    const target = location.hash && document.querySelector(`details${location.hash}`);
+    if (target) target.open = true;
+  }
+  window.addEventListener('hashchange', openLinkedAnswer);
+  openLinkedAnswer();
+
+  // Floating jump arrows: hidden near the top (the page's own links are right there), up
+  // and down in between, up only at the bottom.
+  {
+    const jump = document.querySelector('.jump');
+    const up = jump.querySelector('.jump-up');
+    const down = jump.querySelector('.jump-down');
+    const place = () => {
+      const y = window.scrollY;
+      const bottom = document.documentElement.scrollHeight - window.innerHeight;
+      jump.hidden = y < 400;
+      up.hidden = false;
+      down.hidden = y >= bottom - 120;
+    };
+    up.addEventListener('click', () => window.scrollTo({ top: 0 }));
+    down.addEventListener('click', () => window.scrollTo({ top: document.documentElement.scrollHeight }));
+    window.addEventListener('scroll', place, { passive: true });
+    window.addEventListener('resize', place);
+    place();
   }
 
   // Copy buttons on the install commands.

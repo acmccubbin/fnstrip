@@ -89,7 +89,7 @@ power-supply interface. A meter whose driver isn't loaded stays empty and says s
 
 Temperatures show in °C; `temperature_unit = "f"` shows °F.
 
-Themes: `theme = "mono"`, `"pastel"` or `"rainbow"` (or the default) colours the whole bar,
+Themes: `theme = "pastel"`, `"mono"` or `"rainbow"` (or the default) colours the whole bar,
 meters and spectra included, and a `[colors]` section changes any single colour on top, as
 `"#rrggbb"`.
 

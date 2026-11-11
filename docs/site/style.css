@@ -104,14 +104,6 @@ h2 { font-size: clamp(26px, 3.4vw, 36px); letter-spacing: -0.02em; margin: 0 0 1
   background-clip: text;
   color: transparent;
 }
-.eyebrow {
-  margin: 0;
-  color: var(--muted);
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
 .lede { font-size: clamp(17px, 2vw, 21px); line-height: 1.65; color: #c9c9d2; margin: 0 0 32px; text-wrap: pretty; }
 .muted { color: var(--muted); }
 
@@ -187,7 +179,7 @@ h2 { font-size: clamp(26px, 3.4vw, 36px); letter-spacing: -0.02em; margin: 0 0 1
 
 .hints {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
   list-style: none;
   padding: 0;
@@ -217,7 +209,7 @@ button.link:hover { text-decoration: underline; }
 /* Each recording is the whole bar on one line, like the real thing. */
 .strip { margin: 0 0 30px; }
 .strip .bezel { padding: 6px; }
-.strip img, .strip canvas { display: block; width: 100%; height: auto; border-radius: 5px; background: #000; }
+.strip img, .strip canvas, .strip video { display: block; width: 100%; height: auto; border-radius: 5px; background: #000; }
 .strip figcaption { max-width: 860px; padding: 12px 2px 0; color: #c4c4cc; font-size: 15px; }
 .strip figcaption b { color: var(--text); }
 
@@ -481,6 +473,95 @@ h1 .grad { white-space: nowrap; }
 }
 .badges li::before { content: "\2713"; margin-right: 6px; color: var(--green); }
 
+/* Hero calls to action */
+.cta { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: -12px 0 40px; }
+.button {
+  display: inline-block;
+  padding: 11px 22px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #16161b;
+  color: var(--text);
+  font-weight: 600;
+  font-size: 15px;
+}
+.button:hover { text-decoration: none; border-color: #4a4a55; }
+.button.primary { background: linear-gradient(90deg, #0a8fc0, #b0328f); border-color: transparent; }
+.button.primary:hover { filter: brightness(1.1); }
+.version { color: var(--muted); font-size: 14px; margin-left: 4px; }
+.fun {
+  margin: -8px 0 28px;
+  padding: 14px 18px;
+  border-left: 3px solid var(--magenta);
+  border-radius: 0 12px 12px 0;
+  background: linear-gradient(90deg, rgba(255, 61, 199, 0.09), rgba(0, 199, 255, 0.03));
+  color: #e3e3ea;
+  font-size: clamp(15.5px, 1.6vw, 17.5px);
+}
+.try-note { color: #c9c9d2; font-size: 15px; margin-left: 6px; }
+.skins-hint { margin: 8px 0 0; text-align: center; color: var(--muted); font-size: 13.5px; }
+
+/* Builder steps */
+.build-steps { margin: -6px 0 24px; padding-left: 22px; color: #c9c9d2; max-width: 900px; }
+.build-steps li { margin: 0 0 6px; }
+/* The fallback when this browser can't run the live bar */
+/* Floating jump arrows, top right: none at the top, up only at the bottom. */
+.jump {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.jump[hidden], .jump button[hidden] { display: none; }
+.jump button {
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  color: var(--text);
+  font: 600 20px/1 Inter, system-ui, sans-serif;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.45);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+.jump button:hover { border-color: var(--cyan); color: var(--cyan); }
+.jump button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+
+.camera-source { position: fixed; right: 0; bottom: 0; width: 2px; height: 2px; opacity: 0.01; pointer-events: none; }
+.fallback-only { display: none; }
+.no-live .fallback-only { display: block; }
+.no-live #bar, .no-live .keys, .no-live .minimap, .no-live .skins, .no-live .skins-hint,
+.no-live .hints, .no-live #replay, .no-live .theme-strips, .no-live .build .strip,
+.no-live .tile canvas, .no-live .try-it, .no-live .live-note, .no-live .try-note, .no-live .fine { display: none; }
+.bezel video.fallback-only { width: 100%; height: auto; border-radius: 5px; background: #000; }
+.fallback-note { margin: 12px 2px 0; color: #e8c37a; font-size: 14.5px; }
+.themes-still { max-width: 100%; height: auto; margin: 0 0 30px; border-radius: 12px; }
+.live-note {
+  margin: 0 0 24px;
+  padding: 12px 16px;
+  border: 1px solid #1d4a5c;
+  border-radius: 12px;
+  background: rgba(0, 199, 255, 0.06);
+  color: #c9c9d2;
+  font-size: 15px;
+}
+.live-note .chip { margin-left: 8px; }
+figcaption .try-it { margin-left: 6px; font-size: 14px; }
+
+/* Reference: each part folds */
+details.ref { margin: 0 0 6px; }
+details.ref > summary { list-style: none; cursor: pointer; }
+details.ref > summary::-webkit-details-marker { display: none; }
+details.ref > summary h3 { display: inline-block; }
+details.ref > summary::after { content: "+"; margin-left: 10px; color: var(--muted); font-size: 20px; }
+details.ref[open] > summary::after { content: "\2212"; }
+details.ref > .table-wrap, details.ref > p { margin-bottom: 10px; }
+
 /* Feature cards */
 .cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
 .cards article {
@@ -573,8 +654,8 @@ h1 .grad { white-space: nowrap; }
 .small { font-size: 13px; }
 
 /* Reference tables */
-#docs h3 { margin: 30px 0 10px; font-size: 20px; }
-#docs h3:first-of-type { margin-top: 6px; }
+#docs h3 { margin: 22px 0 10px; font-size: 20px; }
+#docs details.ref:first-of-type h3 { margin-top: 6px; }
 #docs > .muted { max-width: 860px; margin: 0 0 12px; }
 .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); }
 table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
@@ -647,6 +728,8 @@ footer {
   .phone-break { display: inline; }
   h1 { font-size: clamp(40px, 9vw, 64px); }
   .cards { grid-template-columns: minmax(0, 1fr); }
+  .cta { margin-top: -6px; margin-bottom: 30px; }
+  .button { padding: 10px 18px; font-size: 14.5px; }
   /* The left part of each theme, at a size a phone can show. */
   .theme-strip .bezel { overflow: hidden; }
   .theme-strip canvas { width: 260%; max-width: none; }

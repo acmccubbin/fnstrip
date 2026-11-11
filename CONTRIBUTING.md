@@ -24,6 +24,9 @@ Security problems: see [SECURITY.md](SECURITY.md), not a public issue.
 - Keep it std-only and free of `unsafe`, like the rest of the crate.
 - Before a pull request: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, and
   `cargo test`. CI runs the same.
+- The project page draws its bar with fnstrip's own code compiled to WebAssembly (`web/`):
+  after a drawing change, `tools/build_web.sh` rebuilds it (needs the `wasm32-unknown-unknown`
+  Rust target).
 - Say how you tested it, and on which model. Drawing and input changes need a run on a real
   Touch Bar; the tests can't see the panel.
 - AI-assisted changes are fine (fnstrip itself is written that way): say so in the pull

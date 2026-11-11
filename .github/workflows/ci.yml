@@ -46,3 +46,22 @@ jobs:
           rustup default 1.88
       - run: cargo build --locked
       - run: cargo test --locked
+
+  web:
+    name: browser build (web/, the project page's bar)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt --target wasm32-unknown-unknown
+          rustup default stable
+      - run: cargo fmt --check
+        working-directory: web
+      - run: cargo clippy --release --locked --target wasm32-unknown-unknown -- -D warnings
+        working-directory: web
+      # The same build the page uses (docs/site/fnstrip-wasm.js; publishing rebuilds it).
+      - run: tools/build_web.sh

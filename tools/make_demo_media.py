@@ -138,6 +138,81 @@ def strip(frame, caption, left, right, scale):
     return canvas
 
 
+def video(name, images, fps=FPS):
+    """Writes a silent MP4 (H.264, 4:2:0, so every browser plays it, iPhone Safari included);
+    about a tenth of the size of the same GIF. For the web page; the README keeps GIFs."""
+    width, height = images[0].size
+    width -= width % 2
+    height -= height % 2
+    command = ["ffmpeg", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
+               "-s", f"{width}x{height}", "-r", str(fps), "-i", "-", "-an", "-c:v", "libx264",
+               "-preset", "slow", "-crf", "18", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+               os.path.join(OUT, f"{name}.mp4")]
+    ffmpeg = subprocess.Popen(command, stdin=subprocess.PIPE)
+    for image in images:
+        ffmpeg.stdin.write(image.crop((0, 0, width, height)).convert("RGB").tobytes())
+    ffmpeg.stdin.close()
+    ffmpeg.wait()
+
+
+def gradient_text(text, font, colors):
+    """`text` filled with a left-to-right gradient through `colors`, as an RGBA image."""
+    left, top, right, bottom = font.getbbox(text)
+    mask = Image.new("L", (right, bottom))
+    ImageDraw.Draw(mask).text((0, 0), text, font=font, fill=255)
+    width = right
+    ramp = Image.new("RGB", (width, 1))
+    for x in range(width):
+        t = x / max(1, width - 1) * (len(colors) - 1)
+        i = min(int(t), len(colors) - 2)
+        f = t - i
+        ramp.putpixel((x, 0), tuple(round(a + (b - a) * f) for a, b in zip(colors[i], colors[i + 1])))
+    image = ramp.resize((width, bottom)).convert("RGBA")
+    image.putalpha(mask)
+    return image
+
+
+def bold(size):
+    face = ImageFont.truetype("/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf", size)
+    face.set_variation_by_name("Bold")
+    return face
+
+
+def share_image(controls, extras):
+    """docs/media/og.png: the 1200x630 picture shown when the page is shared."""
+    canvas = Image.new("RGB", (1200, 630), (10, 10, 12))
+    draw = ImageDraw.Draw(canvas)
+    brand = gradient_text("fnstrip", bold(104), [(0, 199, 255), (124, 140, 255), (255, 61, 199)])
+    canvas.paste(brand, (56, 44), brand)
+    draw.text((60, 186), "Your Touch Bar, your buttons.", font=bold(46), fill=(236, 236, 240))
+    regular = ImageFont.truetype("/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf", 26)
+    draw.text((62, 252), "For 2016-2017 MacBook Pros on Linux, with T1Bridge. Free and open source.",
+              font=regular, fill=(155, 155, 166))
+    # The bar, folded in two lines per row, scaled so the wider half fits 1080 px.
+    # The extras row folds at its own gap, between the CPU and temperature meters.
+    folds = ((controls, FOLD), (extras, 1034))
+    scale = 1080 / max(frame.shape[1] - fold for frame, fold in folds)
+    top = 324
+    for frame, fold in folds:
+        for half in (frame[:, :fold], frame[:, fold:]):
+            row = Image.fromarray(half)
+            row = row.resize((round(row.width * scale), round(row.height * scale)), Image.LANCZOS)
+            canvas.paste(row, (60, top))
+            top += row.height + 8
+        top += 8
+    canvas.save(os.path.join(OUT, "og.png"))
+
+
+def touch_icon():
+    """docs/site/icon-180.png: the home-screen icon (iPhone), "fn" on the page's dark."""
+    size = 180
+    icon = Image.new("RGB", (size, size), (10, 10, 12))
+    text = gradient_text("fn", bold(112), [(0, 199, 255), (255, 61, 199)])
+    left, top, right, bottom = text.getbbox()
+    icon.paste(text, ((size - (right - left)) // 2 - left, (size - (bottom - top)) // 2 - top), text)
+    icon.save(os.path.join(os.path.dirname(OUT), "site", "icon-180.png"))
+
+
 def gif(name, images, fps=FPS, colors=96):
     """Writes a looping GIF with one shared palette."""
     width, height = images[0].size
@@ -182,7 +257,7 @@ def main():
     Image.fromarray(extras[60]).save(os.path.join(OUT, "extras.png"))
 
     # Every built-in theme (src/theme.rs, Theme::NAMES order): its controls and extras rows.
-    names = ["default", "mono", "pastel", "rainbow"]
+    names = ["default", "pastel", "mono", "rainbow"]
     assert len(themes) == 2 * len(names)
     panels = [fold(themes[2 * index + row], f'theme = "{name}"' if row == 0 else "")
               for index, name in enumerate(names) for row in (0, 1)]
@@ -213,11 +288,18 @@ def main():
     # page captions them), so every picture looks like the real bar.
     os.makedirs(os.path.join(OUT, "strip"), exist_ok=True)
     native = Image.fromarray
-    gif("strip/rows", [native(frame) for frame in (controls, function, extras[60]) for _ in range(2)], fps=1 / 1.25)
-    gif("strip/sliders", [native(frame if x == "-" else finger(frame, int(x))) for frame, x in zip(sliders, fingers)])
-    gif("strip/extras", [native(frame) for frame in extras], colors=256)
-    gif("strip/intro", [native(frame) for frame in intro], fps=30, colors=256)
-    gif("strip/test-screen", [native(frame) for frame in test_screen], colors=128)
+    # Videos, not GIFs: about a tenth of the size. The rows one holds each row 1.25 s at 4 fps.
+    video("strip/rows", [native(frame) for frame in (controls, function, extras[60]) for _ in range(5)], fps=4)
+    video("strip/sliders", [native(frame if x == "-" else finger(frame, int(x))) for frame, x in zip(sliders, fingers)])
+    video("strip/extras", [native(frame) for frame in extras])
+    video("strip/intro", [native(frame) for frame in intro], fps=30)
+    video("strip/test-screen", [native(frame) for frame in test_screen])
+    for old in ("rows", "sliders", "extras", "intro", "test-screen"):
+        path = os.path.join(OUT, "strip", f"{old}.gif")
+        if os.path.exists(path):
+            os.remove(path)
+    share_image(controls, extras[60])
+    touch_icon()
     for name in sorted(os.listdir(OUT)) + [f"strip/{name}" for name in sorted(os.listdir(os.path.join(OUT, "strip")))]:
         path = os.path.join(OUT, name)
         if os.path.isfile(path):
