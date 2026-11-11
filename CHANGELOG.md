@@ -28,7 +28,8 @@ notes here say so.
   buttons that jump back up with your row showing, and a warning before leaving the page
   with a config you haven't copied or downloaded.
 - Project page: floating arrows, top right, to jump to the top or bottom of the page (up only
-  at the bottom, none at the top).
+  at the bottom, none at the top), and the address follows the section you're reading (no `#`
+  at the top), so a bookmark or copied link opens where you are.
 
 ### Changed
 

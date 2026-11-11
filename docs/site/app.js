@@ -1785,7 +1785,45 @@
     };
     up.addEventListener('click', () => window.scrollTo({ top: 0 }));
     down.addEventListener('click', () => window.scrollTo({ top: document.documentElement.scrollHeight }));
-    window.addEventListener('scroll', place, { passive: true });
+
+    // The address follows the reading position, so a bookmark or copied link opens where you
+    // are: the section in view (#themes), or the plain page at the top. It replaces the
+    // address rather than adding history, and a link to something inside the section in view
+    // (#other-macs in the FAQ) is kept.
+    const sections = [...document.querySelectorAll('main section[id], body > section[id]')];
+    const follow = () => {
+      const y = window.scrollY;
+      const atBottom = y >= document.documentElement.scrollHeight - window.innerHeight - 4;
+      const line = window.innerHeight * 0.3;
+      let current = null;
+      if (atBottom) {
+        current = sections[sections.length - 1];
+      } else {
+        for (const section of sections) {
+          if (section.getBoundingClientRect().top <= line) current = section;
+        }
+      }
+      const linked = location.hash.length > 1 && document.getElementById(location.hash.slice(1));
+      if (current && linked && current.contains(linked)) return;
+      const wanted = current ? `#${current.id}` : '';
+      if (location.hash === wanted) return;
+      try {
+        history.replaceState(history.state, '', `${location.pathname}${location.search}${wanted}`);
+      } catch {
+        // Some browsers limit how often the address may change; the next scroll catches up.
+      }
+    };
+    let pending = false;
+    const onScroll = () => {
+      place();
+      if (pending) return;
+      pending = true;
+      setTimeout(() => {
+        pending = false;
+        follow();
+      }, 150);
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
     window.addEventListener('resize', place);
     place();
   }
