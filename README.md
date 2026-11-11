@@ -10,6 +10,9 @@ your browser (it runs fnstrip's own drawing code), and build your config with a 
 Not affiliated with or endorsed by Apple or the T1Bridge project. "Touch Bar" is a trademark
 of Apple Inc.
 
+**Target models:** MacBook Pros with a T1 chip and a Touch Bar, the 2016 and 2017
+models: MacBookPro13,2, MacBookPro13,3, MacBookPro14,2 and MacBookPro14,3.
+
 **Status: beta.** Tested on one machine so far: a 15" 2016 MacBookPro13,3 running T1Bridge
 v0.1.12. Reports from other models are welcome.
 
