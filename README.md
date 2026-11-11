@@ -74,8 +74,13 @@ systemctl --user restart t1-touchbar.service
 ## Configure
 
 Copy `config/default.toml` to `~/.config/fnstrip/config.toml`; its comments describe every
-setting. Restart `t1-touchbar.service` to apply. A broken config falls back to the built-in
-default, and the error goes to `journalctl --user -u t1-touchbar.service`.
+setting. Restart `t1-touchbar.service` to apply. A mistake costs only its own line: it's
+logged with its line number to `journalctl --user -u t1-touchbar.service` and skipped, and the
+rest applies. Settings are only ever added, so your config keeps working on newer versions.
+
+The VPN button works with any VPN (fnstrip reads no output from it): `command` toggles it,
+`status` lights the button while it exits 0, and `interface` names the tunnel for the traffic
+graph. `config/default.toml` has WireGuard, NetworkManager and Tailscale examples.
 
 Temperatures show in °C; `temperature_unit = "f"` shows °F.
 

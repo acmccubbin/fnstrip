@@ -121,7 +121,7 @@
       <article><h3>Music you can see</h3><p>Play/pause lights up while something plays, with a live spectrum of what you're hearing.</p></article>
       <article><h3>Camera and mic</h3><p>See your camera's picture and your mic's sound on their buttons, so you know at a glance when they're live.</p></article>
       <article><h3>Themes</h3><p>Default, mono, pastel or rainbow, across the whole bar, meters included. Any colour can be changed on top.</p></article>
-      <article><h3>Safe to try</h3><p>A bad config falls back to the default; if fnstrip stops, T1Bridge's own bar comes back.</p></article>
+      <article><h3>Safe to try</h3><p>A typo in the config costs only that line, not your setup; if fnstrip stops, T1Bridge's own bar comes back.</p></article>
     </div>
   </section>
 
@@ -205,8 +205,8 @@
   <span class="k">status</span>  = <span class="s">"makoctl mode | grep -q do-not-disturb"</span></code></pre>
           <p class="muted">
             Commands run with <code>sh -c</code> as you, so treat the file like a shell script.
-            For now the icons come from this set; the command can be anything. A broken config
-            falls back to the built-in default, and if fnstrip ever exits, T1Bridge's own bar
+            For now the icons come from this set; the command can be anything. A mistake in the
+            config costs only its own line, and if fnstrip ever exits, T1Bridge's own bar
             comes back.
           </p>
         </div>
@@ -251,7 +251,7 @@ systemctl --user restart t1-touchbar.service</code></pre>
       </li>
       <li>
         <h3>Make it yours <span class="opt">optional</span></h3>
-        <p>Without a config you get the controls, the F-keys and an empty extras row. Build one with <a href="#configure">the builder</a> above, or start from <code>config/default.toml</code>, which explains every setting. Save it as <code>~/.config/fnstrip/config.toml</code> and restart the service.</p>
+        <p>Without a config you get the built-in default: the controls, the F-keys, and an extras row with a mic toggle and CPU, memory, disk, network and battery meters. Build one with <a href="#configure">the builder</a> above, or start from <code>config/default.toml</code>, which explains every setting. Save it as <code>~/.config/fnstrip/config.toml</code> and restart the service.</p>
       </li>
     </ol>
     <div class="callout">
@@ -281,7 +281,7 @@ systemctl --user restart t1-touchbar.service</code></pre>
     </table></div>
 
     <h3>The config file</h3>
-    <p class="muted">A small, strict subset of TOML at <code>~/.config/fnstrip/config.toml</code>. Values are quoted strings. A mistake is reported with its line number in <code>journalctl --user -u t1-touchbar.service</code>, and the bar carries on with the built-in default.</p>
+    <p class="muted">A small subset of TOML at <code>~/.config/fnstrip/config.toml</code>. Values are quoted strings; on/off settings also take <code>true</code>/<code>false</code>. A mistake costs only its own line: it's logged with its line number in <code>journalctl --user -u t1-touchbar.service</code> and skipped, and the rest applies. Settings are only ever added, so your config keeps working on newer versions.</p>
     <div class="table-wrap"><table>
       <tr><th>Setting</th><th>Values</th><th>What it does</th></tr>
       <tr><td><code>default_row</code></td><td><code>"controls"</code>, <code>"function"</code></td><td>The row shown with fn up; the other one shows while fn is held.</td></tr>
@@ -297,11 +297,21 @@ systemctl --user restart t1-touchbar.service</code></pre>
       <tr><td>&emsp;<code>interface</code></td><td>e.g. <code>"wg0"</code></td><td>For <code>vpn</code> and <code>net</code>: which network interface to graph.</td></tr>
     </table></div>
 
+    <h3>Any VPN</h3>
+    <p class="muted">fnstrip reads no output from your VPN: <code>command</code> toggles it (its output is ignored), <code>status</code> says whether it's up (exit code 0 = lit), and <code>interface</code> names its network interface for the traffic graph (<code>ip link</code> lists them).</p>
+    <div class="table-wrap"><table>
+      <tr><th>VPN</th><th><code>status</code></th><th><code>interface</code></th></tr>
+      <tr><td>WireGuard (<code>wg-quick</code>)</td><td><code>test -e /sys/class/net/wg0</code></td><td><code>wg0</code></td></tr>
+      <tr><td>NetworkManager (OpenVPN, WireGuard, …)</td><td><code>nmcli -t -f NAME connection show --active | grep -qx Work</code></td><td><code>tun0</code>, or the connection's own name</td></tr>
+      <tr><td>Tailscale</td><td><code>tailscale status &gt;/dev/null</code></td><td><code>tailscale0</code></td></tr>
+    </table></div>
+    <p class="muted small">The matching toggle commands are in <code>config/default.toml</code>. <code>wg-quick</code> needs root; NetworkManager can bring WireGuard up and down as you.</p>
+
     <h3>When something's off</h3>
     <div class="table-wrap"><table>
       <tr><th>You see</th><th>Try</th></tr>
       <tr><td>T1Bridge's own bar, not fnstrip</td><td>Check the link (<code>ls -l ~/.config/t1bridge/renderer</code>) and the log: <code>journalctl --user -u t1-touchbar.service -b</code>.</td></tr>
-      <tr><td>Your buttons are missing</td><td>The config has a mistake: the log names the line.</td></tr>
+      <tr><td>A button or setting is missing</td><td>Its line has a mistake: the log names the line and says what's wrong.</td></tr>
       <tr><td>Volume or media do nothing</td><td>Set up a desktop provider (install step 3). Media keys need a player that supports MPRIS, which most do.</td></tr>
       <tr><td>No brightness sliders</td><td>Install <code>brightnessctl</code>.</td></tr>
       <tr><td>The camera button stays dark</td><td>It shows the picture from the webcam service in <code>contrib/t1-webcam</code>.</td></tr>

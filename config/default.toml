@@ -1,10 +1,16 @@
 # fnstrip config. Copy to ~/.config/fnstrip/config.toml and edit; the renderer reads it at
 # start (`systemctl --user restart t1-touchbar.service` to apply). This file is also built
-# into the binary as the fallback when yours is missing or has an error (the error goes to
-# `journalctl --user -u t1-touchbar.service`).
+# into the binary, and used when you have no config of your own.
 #
-# Format: a strict subset of TOML. Values are quoted strings: "basic" (escapes \" \\ \n \t)
-# or 'literal' (no escapes, handy for shell commands with double quotes).
+# Format: a subset of TOML. Values are quoted strings: "basic" (escapes \" \\ \n \t) or
+# 'literal' (no escapes, handy for shell commands with double quotes); the on/off settings
+# also take true/false.
+#
+# Mistakes cost only their own line: each is logged with its line number to
+# `journalctl --user -u t1-touchbar.service` and skipped (a bad value keeps that setting's
+# default; a broken [[extras]] entry leaves out that button), and the rest applies.
+# Compatibility: settings are only ever added, so this file keeps working on newer fnstrip;
+# a renamed setting keeps its old name working, with a warning, for at least one release.
 #
 # default_row = "controls" (brightness, media, volume; F1-F12 while Fn is held), or
 #               "function" (Esc + F1-F12; the controls while Fn is held). Goes above the
@@ -64,6 +70,20 @@
 #   icon = "vpn"
 #   command = "my-vpn-toggle"
 #   status = "test -e /sys/class/net/wg0"
+#
+# The VPN button works with any VPN: fnstrip reads no output. `command` toggles it (its
+# output is ignored), `status` says whether it's up (exit 0 = lit), and `interface` names
+# its network interface for the traffic graph (`ip link` lists them). For example:
+#
+#   WireGuard:      command = "if [ -e /sys/class/net/wg0 ]; then wg-quick down wg0; else wg-quick up wg0; fi"
+#                   status = "test -e /sys/class/net/wg0"         interface = "wg0"
+#   NetworkManager: command = "if nmcli -t -f NAME connection show --active | grep -qx Work; then nmcli connection down Work; else nmcli connection up Work; fi"
+#                   status = "nmcli -t -f NAME connection show --active | grep -qx Work"
+#                   interface = "tun0" (OpenVPN; WireGuard connections use their own name)
+#   Tailscale:      command = "tailscale status >/dev/null && tailscale down || tailscale up"
+#                   status = "tailscale status >/dev/null"         interface = "tailscale0"
+#
+# (wg-quick needs root; NetworkManager can bring WireGuard up and down as you.)
 
 default_row = "controls"
 

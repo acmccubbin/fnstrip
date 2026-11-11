@@ -1,10 +1,17 @@
 //! User configuration: `$XDG_CONFIG_HOME/fnstrip/config.toml` (else `~/.config/...`).
 //!
-//! The format is a strict TOML subset, parsed here so the crate stays std-only:
-//! `# comments`, `[[extras]]` table-array headers, a `[colors]` table, and `key = "basic"` or `key = 'literal'`
-//! string values (basic strings take `\"`, `\\`, `\n`, `\t`). Anything else is an error
-//! with a line number. A missing or broken file falls back to the built-in default
-//! (`config/default.toml`), so a typo never costs the bar.
+//! The format is a TOML subset, parsed here so the crate stays std-only: `# comments`,
+//! `[[extras]]` table-array headers, a `[colors]` table, and `key = "basic"` or
+//! `key = 'literal'` string values (basic strings take `\"`, `\\`, `\n`, `\t`), or
+//! `true`/`false` for the on/off settings.
+//!
+//! Parsing is lenient, so a typo or a config written for a newer fnstrip costs only that
+//! line: each problem is logged with its line number (in the user journal) and skipped, and
+//! the rest of the file applies. Only a missing or unreadable file falls back to the
+//! built-in default (`config/default.toml`).
+//!
+//! Compatibility: settings are only ever added. A renamed one keeps its old name working,
+//! with a warning, for at least one minor release.
 
 use std::env;
 use std::fmt;
@@ -75,20 +82,21 @@ impl Default for Config {
 }
 
 impl Config {
-    /// The user's config, or the built-in default if it's missing or invalid (logged).
+    /// The user's config (each mistake in it logged and skipped), or the built-in default
+    /// if there is none or it can't be read.
     #[must_use]
     pub fn load() -> Self {
         let Some(path) = config_path() else {
             return Self::default_config();
         };
         match fs::read_to_string(&path) {
-            Ok(text) => Self::parse(&text).unwrap_or_else(|error| {
-                eprintln!(
-                    "fnstrip: {}: {error}; using the built-in default",
-                    path.display()
-                );
-                Self::default_config()
-            }),
+            Ok(text) => {
+                let (config, problems) = Self::parse(&text);
+                for problem in problems {
+                    eprintln!("fnstrip: {}: {problem}; skipped", path.display());
+                }
+                config
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Self::default_config(),
             Err(error) => {
                 eprintln!(
@@ -102,85 +110,98 @@ impl Config {
 
     /// # Panics
     ///
-    /// Only if the embedded default is invalid, which a unit test rules out.
+    /// Only if the embedded default has a mistake, which a unit test rules out.
     #[must_use]
     pub fn default_config() -> Self {
-        Self::parse(DEFAULT_CONFIG).expect("built-in default config parses")
+        let (config, problems) = Self::parse(DEFAULT_CONFIG);
+        assert!(problems.is_empty(), "built-in default config: {problems:?}");
+        config
     }
 
-    /// # Errors
-    ///
-    /// The first syntax or schema problem, with its line number.
-    pub fn parse(text: &str) -> Result<Self, ConfigError> {
+    /// The config in `text`, and its problems, each with its line number. Lenient, so a
+    /// config written for a newer fnstrip, or with a typo, still mostly works: an unknown
+    /// setting or section is skipped, a bad value leaves that setting at its default, and
+    /// a broken `[[extras]]` entry leaves out that one button.
+    #[must_use]
+    pub fn parse(text: &str) -> (Self, Vec<ConfigError>) {
         let mut config = Self::default();
-        let mut current: Option<(usize, PartialExtra)> = None;
-        // Inside `[colors]`; its entries apply over the named theme once it is known.
-        let mut in_colors = false;
-        let mut colors: Vec<(usize, String, String)> = Vec::new();
+        let mut problems = Vec::new();
+        let mut section = Section::Top;
+        // `[colors]` entries apply over the named theme once the whole file is read.
+        let mut colors: Vec<(usize, String, Value)> = Vec::new();
         let mut theme_name: Option<String> = None;
         for (index, raw) in text.lines().enumerate() {
             let line = index + 1;
-            let error = |message: &str| ConfigError {
-                line,
-                message: message.to_owned(),
-            };
+            let mut problem = |message: String| problems.push(ConfigError { line, message });
             let content = strip_comment(raw).trim();
             if content.is_empty() {
                 continue;
             }
             if content.starts_with('[') {
-                if let Some((start, extra)) = current.take() {
-                    config.push_extra(start, extra)?;
+                if let Section::Extra(start, extra) = std::mem::replace(&mut section, Section::Top)
+                    && let Err(error) = config.push_extra(start, extra)
+                {
+                    problems.push(error);
                 }
-                in_colors = content == "[colors]";
-                if in_colors {
+                section = match content {
+                    "[colors]" => Section::Colors,
+                    "[[extras]]" => Section::Extra(line, PartialExtra::default()),
+                    _ => {
+                        problems.push(ConfigError {
+                            line,
+                            message: format!(
+                                "unknown section `{content}` (known: [colors], [[extras]])"
+                            ),
+                        });
+                        Section::Unknown
+                    }
+                };
+                continue;
+            }
+            let Some((key, value)) = content.split_once('=') else {
+                problem("expected key = \"value\"".to_owned());
+                continue;
+            };
+            let key = key.trim();
+            let value = match parse_value(value.trim()) {
+                Ok(value) => value,
+                Err(message) => {
+                    problem(message);
                     continue;
                 }
-                if content != "[[extras]]" {
-                    return Err(error("unknown section (only [colors] and [[extras]])"));
+            };
+            match &mut section {
+                Section::Top => {
+                    if let Err(message) = config.set_top_level(key, value, &mut theme_name) {
+                        problem(message);
+                    }
                 }
-                current = Some((line, PartialExtra::default()));
-                continue;
-            }
-            let (key, value) = content
-                .split_once('=')
-                .ok_or_else(|| error("expected key = \"value\""))?;
-            let key = key.trim();
-            let value = parse_string(value.trim()).map_err(|message| error(&message))?;
-            if in_colors {
-                colors.push((line, key.to_owned(), value));
-                continue;
-            }
-            let Some((_, extra)) = current.as_mut() else {
-                config
-                    .set_top_level(key, value, &mut theme_name)
-                    .map_err(|message| error(&message))?;
-                continue;
-            };
-            let slot = match key {
-                "icon" => &mut extra.icon,
-                "command" => &mut extra.command,
-                "status" => &mut extra.status,
-                "interface" => &mut extra.interface,
-                _ => return Err(error(&format!("unknown key `{key}`"))),
-            };
-            if slot.replace(value).is_some() {
-                return Err(error(&format!("`{key}` given twice")));
+                Section::Colors => colors.push((line, key.to_owned(), value)),
+                Section::Extra(_, extra) => {
+                    if let Err(message) = extra.set(key, value) {
+                        problem(message);
+                    }
+                }
+                Section::Unknown => {}
             }
         }
-        if let Some((start, extra)) = current {
-            config.push_extra(start, extra)?;
+        if let Section::Extra(start, extra) = section
+            && let Err(error) = config.push_extra(start, extra)
+        {
+            problems.push(error);
         }
         if let Some(name) = theme_name {
             config.theme = Theme::named(&name).unwrap_or_default();
         }
         for (line, key, value) in colors {
-            config
-                .theme
-                .set(&key, &value)
-                .map_err(|message| ConfigError { line, message })?;
+            let result = value
+                .text(&key)
+                .and_then(|text| config.theme.set(&key, &text));
+            if let Err(message) = result {
+                problems.push(ConfigError { line, message });
+            }
         }
-        Ok(config)
+        (config, problems)
     }
 
     /// A setting above the first `[[extras]]` (the theme is applied after the whole file,
@@ -188,48 +209,37 @@ impl Config {
     fn set_top_level(
         &mut self,
         key: &str,
-        value: String,
+        value: Value,
         theme_name: &mut Option<String>,
     ) -> Result<(), String> {
         match key {
             "default_row" => {
-                self.function_row_first = match value.as_str() {
+                self.function_row_first = match value.text(key)?.as_str() {
                     "controls" => false,
                     "function" => true,
                     _ => return Err("default_row must be \"controls\" or \"function\"".into()),
                 };
             }
-            "startup_animation" => {
-                self.startup_animation = match value.as_str() {
-                    "on" => true,
-                    "off" => false,
-                    _ => return Err("startup_animation must be \"on\" or \"off\"".into()),
-                };
-            }
-            "debug_gestures" => {
-                self.debug_gestures = match value.as_str() {
-                    "on" => true,
-                    "off" => false,
-                    _ => return Err("debug_gestures must be \"on\" or \"off\"".into()),
-                };
-            }
+            "startup_animation" => self.startup_animation = value.on_off(key)?,
+            "debug_gestures" => self.debug_gestures = value.on_off(key)?,
             "temperature_unit" => {
-                self.fahrenheit = match value.to_ascii_lowercase().as_str() {
+                self.fahrenheit = match value.text(key)?.to_ascii_lowercase().as_str() {
                     "c" | "celsius" => false,
                     "f" | "fahrenheit" => true,
                     _ => return Err("temperature_unit must be \"c\" or \"f\"".into()),
                 };
             }
             "theme" => {
-                if Theme::named(&value).is_none() {
+                let name = value.text(key)?;
+                if Theme::named(&name).is_none() {
                     return Err(format!(
-                        "unknown theme `{value}` (known: {})",
+                        "unknown theme `{name}` (known: {})",
                         Theme::NAMES.join(", ")
                     ));
                 }
-                *theme_name = Some(value);
+                *theme_name = Some(name);
             }
-            _ => return Err("key outside an [[extras]] entry".into()),
+            _ => return Err(format!("unknown setting `{key}`")),
         }
         Ok(())
     }
@@ -238,22 +248,26 @@ impl Config {
         let error = |message: String| ConfigError { line, message };
         if self.extras.len() == MAX_EXTRAS {
             return Err(error(format!(
-                "at most {MAX_EXTRAS} [[extras]] fit the bar"
+                "at most {MAX_EXTRAS} [[extras]] fit the bar; this one is left out"
             )));
         }
         let icon_name = extra
             .icon
-            .ok_or_else(|| error("[[extras]] needs an icon".to_owned()))?;
+            .ok_or_else(|| error("this [[extras]] has no icon; left out".to_owned()))?;
         let icon = ExtraIcon::from_name(&icon_name).ok_or_else(|| {
             error(format!(
-                "unknown icon `{icon_name}` (known: {})",
+                "unknown icon `{icon_name}` (known: {}); this button is left out",
                 ExtraIcon::NAMES.join(", ")
             ))
         })?;
         let command = match extra.command {
             Some(command) => command,
             None if icon.is_meter() => String::new(),
-            None => return Err(error("[[extras]] needs a command".to_owned())),
+            None => {
+                return Err(error(format!(
+                    "the `{icon_name}` button has no command; left out"
+                )));
+            }
         };
         self.extras.push(ExtraConfig {
             icon,
@@ -265,12 +279,83 @@ impl Config {
     }
 }
 
+/// Where in the file a `key = value` line belongs.
+enum Section {
+    Top,
+    Colors,
+    /// An `[[extras]]` entry, from this line.
+    Extra(usize, PartialExtra),
+    /// A section this fnstrip doesn't know (reported once, its entries skipped).
+    Unknown,
+}
+
+/// A value: a quoted string, or `true`/`false` for the on/off settings.
+#[derive(Debug)]
+enum Value {
+    Text(String),
+    Bool(bool),
+}
+
+impl Value {
+    fn text(self, key: &str) -> Result<String, String> {
+        match self {
+            Self::Text(text) => Ok(text),
+            Self::Bool(_) => Err(format!("`{key}` takes a quoted string")),
+        }
+    }
+
+    /// `"on"`/`"off"`, or `true`/`false`.
+    fn on_off(self, key: &str) -> Result<bool, String> {
+        match self {
+            Self::Bool(on) => Ok(on),
+            Self::Text(text) if text == "on" => Ok(true),
+            Self::Text(text) if text == "off" => Ok(false),
+            Self::Text(_) => Err(format!("{key} must be \"on\" or \"off\"")),
+        }
+    }
+}
+
+fn parse_value(value: &str) -> Result<Value, String> {
+    match value {
+        "true" => Ok(Value::Bool(true)),
+        "false" => Ok(Value::Bool(false)),
+        _ => parse_string(value).map(Value::Text),
+    }
+}
+
 #[derive(Default)]
 struct PartialExtra {
     icon: Option<String>,
     command: Option<String>,
     status: Option<String>,
     interface: Option<String>,
+}
+
+impl PartialExtra {
+    fn set(&mut self, key: &str, value: Value) -> Result<(), String> {
+        let slot = match key {
+            "icon" => &mut self.icon,
+            "command" => &mut self.command,
+            "status" => &mut self.status,
+            "interface" => &mut self.interface,
+            "default_row" | "startup_animation" | "debug_gestures" | "temperature_unit"
+            | "theme" => {
+                return Err(format!(
+                    "`{key}` belongs above the first [[extras]], not inside one"
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "unknown key `{key}` in [[extras]] (known: icon, command, status, interface)"
+                ));
+            }
+        };
+        if slot.is_some() {
+            return Err(format!("`{key}` given twice; the first one is used"));
+        }
+        *slot = Some(value.text(key)?);
+        Ok(())
+    }
 }
 
 fn config_path() -> Option<PathBuf> {
@@ -305,7 +390,7 @@ fn parse_string(value: &str) -> Result<String, String> {
     let mut characters = value.chars();
     let quote = characters.next();
     if !matches!(quote, Some('"' | '\'')) {
-        return Err("values must be quoted strings".to_owned());
+        return Err("values must be quoted strings (or true/false)".to_owned());
     }
     let mut output = String::new();
     while let Some(character) = characters.next() {
@@ -335,6 +420,22 @@ fn parse_string(value: &str) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    /// The config, and fails the test on any problem.
+    fn clean(text: &str) -> Config {
+        let (config, problems) = Config::parse(text);
+        assert!(problems.is_empty(), "{text}: {problems:?}");
+        config
+    }
+
+    /// The first problem's line and message.
+    fn problem(text: &str) -> (usize, String) {
+        let (_, problems) = Config::parse(text);
+        let first = problems
+            .first()
+            .unwrap_or_else(|| panic!("no problem in {text}"));
+        (first.line, first.message.clone())
+    }
+
     #[test]
     fn built_in_default_parses() {
         let config = Config::default_config();
@@ -344,7 +445,7 @@ mod tests {
 
     #[test]
     fn parses_entries_comments_and_both_string_kinds() {
-        let config = Config::parse(
+        let config = clean(
             r##"
             # extras row
             [[extras]]
@@ -356,8 +457,7 @@ mod tests {
             icon = 'camera'
             command = "webcam toggle"
             "##,
-        )
-        .unwrap();
+        );
         assert_eq!(
             config.extras,
             [
@@ -379,107 +479,67 @@ mod tests {
 
     #[test]
     fn meters_need_no_command_and_take_an_interface() {
-        let config = Config::parse(
-            "[[extras]]
-icon = \"cpu\"
-[[extras]]
-icon = \"net\"
-interface = 'wlan0'",
-        )
-        .unwrap();
+        let config =
+            clean("[[extras]]\nicon = \"cpu\"\n[[extras]]\nicon = \"net\"\ninterface = 'wlan0'");
         assert_eq!(config.extras[0].icon, ExtraIcon::Cpu);
         assert_eq!(config.extras[0].command, "");
         assert_eq!(config.extras[1].interface.as_deref(), Some("wlan0"));
     }
 
     #[test]
-    fn debug_gestures_are_off_unless_turned_on() {
-        assert!(!Config::parse("").unwrap().debug_gestures);
+    fn on_off_settings_take_strings_or_booleans() {
+        assert!(!clean("").debug_gestures);
+        assert!(clean("debug_gestures = \"on\"").debug_gestures);
+        assert!(clean("debug_gestures = true").debug_gestures);
+        assert!(!clean("startup_animation = false").startup_animation);
+        assert!(clean("").startup_animation);
+        assert!(Config::default_config().startup_animation);
         assert!(
-            Config::parse("debug_gestures = \"on\"")
-                .unwrap()
-                .debug_gestures
+            problem("debug_gestures = \"yes\"")
+                .1
+                .contains("\"on\" or \"off\"")
         );
-        assert!(Config::parse("debug_gestures = \"yes\"").is_err());
+        assert!(problem("theme = true").1.contains("quoted string"));
     }
 
     #[test]
     fn temperature_is_celsius_unless_set_to_fahrenheit() {
-        assert!(!Config::parse("").unwrap().fahrenheit);
-        assert!(
-            Config::parse("temperature_unit = \"f\"")
-                .unwrap()
-                .fahrenheit
-        );
-        assert!(
-            Config::parse("temperature_unit = \"Fahrenheit\"")
-                .unwrap()
-                .fahrenheit
-        );
-        assert!(
-            !Config::parse("temperature_unit = \"c\"")
-                .unwrap()
-                .fahrenheit
-        );
-        assert!(Config::parse("temperature_unit = \"k\"").is_err());
+        assert!(!clean("").fahrenheit);
+        assert!(clean("temperature_unit = \"f\"").fahrenheit);
+        assert!(clean("temperature_unit = \"Fahrenheit\"").fahrenheit);
+        assert!(!clean("temperature_unit = \"c\"").fahrenheit);
+        assert!(!Config::parse("temperature_unit = \"k\"").0.fahrenheit);
     }
 
     #[test]
     fn theme_and_colors_apply_in_that_order() {
-        let config = Config::parse(
-            "theme = \"mono\"\n[colors]\nlabel = \"#fffff0\"\n\
-             [[extras]]\nicon = \"cpu\"\n",
-        )
-        .unwrap();
+        let config =
+            clean("theme = \"mono\"\n[colors]\nlabel = \"#fffff0\"\n[[extras]]\nicon = \"cpu\"\n");
         let mono = Theme::named("mono").unwrap();
         assert_eq!(config.theme.plate, mono.plate);
         assert_eq!(config.theme.label.blue, 0xf0);
         assert_eq!(config.extras.len(), 1);
-        assert_eq!(Config::parse("").unwrap().theme, Theme::DEFAULT);
-        let error = Config::parse("theme = \"neon\"").unwrap_err();
-        assert!(error.message.contains("unknown theme"), "{error}");
-        let error = Config::parse("[colors]\nplate = \"grey\"").unwrap_err();
-        assert_eq!(error.line, 2);
-    }
-
-    #[test]
-    fn startup_animation_is_on_unless_turned_off() {
-        assert!(Config::parse("").unwrap().startup_animation);
-        assert!(Config::default_config().startup_animation);
-        assert!(
-            Config::parse("startup_animation = 'on'")
-                .unwrap()
-                .startup_animation
-        );
-        assert!(
-            !Config::parse("startup_animation = 'off'")
-                .unwrap()
-                .startup_animation
-        );
-        assert!(Config::parse("startup_animation = 'loud'").is_err());
-        assert!(Config::parse("[[extras]]\nstartup_animation = 'off'").is_err());
+        assert_eq!(clean("").theme, Theme::DEFAULT);
+        assert!(problem("theme = \"neon\"").1.contains("unknown theme"));
+        assert_eq!(problem("[colors]\nplate = \"grey\"").0, 2);
     }
 
     #[test]
     fn default_row_is_a_top_level_setting() {
+        assert!(clean("default_row = 'function'").function_row_first);
+        assert!(!clean("default_row = 'controls'").function_row_first);
+        assert_eq!(problem("\ndefault_row = 'x'").0, 2);
         assert!(
-            Config::parse("default_row = 'function'")
-                .unwrap()
-                .function_row_first
+            problem("[[extras]]\ndefault_row = 'function'")
+                .1
+                .contains("belongs above")
         );
-        assert!(
-            !Config::parse("default_row = 'controls'")
-                .unwrap()
-                .function_row_first
-        );
-        assert_eq!(Config::parse("\ndefault_row = 'x'").unwrap_err().line, 2);
-        assert!(Config::parse("[[extras]]\ndefault_row = 'function'").is_err());
     }
 
     #[test]
-    fn errors_name_the_line() {
+    fn problems_name_the_line() {
         let cases = [
-            ("icon = \"mic\"", 1, "outside"),
+            ("color = \"red\"", 1, "unknown setting"),
             ("[buttons]", 1, "unknown section"),
             ("[[extras]]\nicon = mic", 2, "quoted"),
             (
@@ -493,21 +553,53 @@ interface = 'wlan0'",
                 1,
                 "unknown icon",
             ),
-            ("[[extras]]\nicon = \"mic\"", 1, "needs a command"),
-            ("[[extras]]\ncommand = \"x\"", 1, "needs an icon"),
+            ("[[extras]]\nicon = \"mic\"", 1, "no command"),
+            ("[[extras]]\ncommand = \"x\"", 1, "no icon"),
             ("[[extras]]\ncommand = \"x", 2, "unterminated"),
+            ("just words", 1, "expected key"),
         ];
         for (text, line, fragment) in cases {
-            let error = Config::parse(text).unwrap_err();
-            assert_eq!(error.line, line, "{text}");
-            assert!(error.message.contains(fragment), "{text}: {error}");
+            let (at, message) = problem(text);
+            assert_eq!(at, line, "{text}");
+            assert!(message.contains(fragment), "{text}: {message}");
         }
     }
 
     #[test]
-    fn too_many_extras_is_an_error() {
+    fn a_problem_costs_only_its_own_line_or_button() {
+        // A setting from a newer fnstrip, a typo'd value, an unknown section with its
+        // entries, and a broken button: everything else still applies.
+        let (config, problems) = Config::parse(
+            "theme = \"mono\"\n\
+             sparkles = \"on\"\n\
+             startup_animation = \"maybe\"\n\
+             debug_gestures = \"on\"\n\
+             [sounds]\n\
+             click = \"on\"\n\
+             [[extras]]\n\
+             icon = \"cpu\"\n\
+             [[extras]]\n\
+             icon = \"kettle\"\n\
+             command = \"x\"\n\
+             [[extras]]\n\
+             icon = \"mem\"\n\
+             speed = \"fast\"\n",
+        );
+        assert_eq!(config.theme, Theme::named("mono").unwrap());
+        assert!(config.startup_animation, "a bad value keeps the default");
+        assert!(config.debug_gestures);
+        let icons: Vec<_> = config.extras.iter().map(|extra| extra.icon).collect();
+        assert_eq!(icons, [ExtraIcon::Cpu, ExtraIcon::Memory]);
+        let lines: Vec<_> = problems.iter().map(|problem| problem.line).collect();
+        assert_eq!(lines, [2, 3, 5, 9, 14], "{problems:?}");
+    }
+
+    #[test]
+    fn extras_beyond_ten_are_left_out() {
         let entry = "[[extras]]\nicon = \"mic\"\ncommand = \"x\"\n";
-        assert!(Config::parse(&entry.repeat(MAX_EXTRAS)).is_ok());
-        assert!(Config::parse(&entry.repeat(MAX_EXTRAS + 1)).is_err());
+        assert_eq!(clean(&entry.repeat(MAX_EXTRAS)).extras.len(), MAX_EXTRAS);
+        let (config, problems) = Config::parse(&entry.repeat(MAX_EXTRAS + 1));
+        assert_eq!(config.extras.len(), MAX_EXTRAS);
+        assert_eq!(problems.len(), 1);
     }
 }

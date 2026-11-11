@@ -159,7 +159,10 @@
       short: 'green with a bolt on power',
     },
   };
-  let chosen = Object.keys(EXTRA_INFO);
+  // The builder starts from the built-in default (config/default.toml), so its download
+  // works as-is; the hero bar shows every button until the builder is used.
+  let chosen = ['mic', 'cpu', 'mem', 'disk', 'net', 'battery'];
+  let builderUsed = false;
   let EXTRAS = [];
   function layoutExtras() {
     EXTRAS = extrasRow(chosen);
@@ -178,6 +181,7 @@
     }));
   }
   layoutExtras();
+  const SHOWCASE = extrasRow(Object.keys(EXTRA_INFO));
 
   // ---- State ------------------------------------------------------------------------------
 
@@ -189,7 +193,7 @@
     fnDown: false,
     pressed: null,
   };
-  const layout = () => (state.extras ? EXTRAS : state.fnDown ? FUNCTION : CONTROLS);
+  const layout = () => (state.extras ? (builderUsed ? EXTRAS : SHOWCASE) : state.fnDown ? FUNCTION : CONTROLS);
 
   // ---- Canvas -----------------------------------------------------------------------------
 
@@ -1524,6 +1528,7 @@
   const grouped = (names) => names.filter((n) => !isMeter(n)).concat(names.filter(isMeter));
 
   function pick(name) {
+    builderUsed = true;
     if (chosen.includes(name)) {
       chosen = chosen.filter((other) => other !== name);
       switchOff(name);
@@ -1539,6 +1544,7 @@
     const from = group.indexOf(name);
     const to = from + step;
     if (from < 0 || to < 0 || to >= group.length) return;
+    builderUsed = true;
     [group[from], group[to]] = [group[to], group[from]];
     chosen = isMeter(name) ? chosen.filter((n) => !isMeter(n)).concat(group) : group.concat(chosen.filter(isMeter));
     rebuild();
@@ -1561,10 +1567,12 @@
   }
 
   document.getElementById('pick-all').addEventListener('click', () => {
+    builderUsed = true;
     chosen = grouped(chosen.concat(Object.keys(EXTRA_INFO).filter((n) => !chosen.includes(n))));
     rebuild();
   });
   document.getElementById('pick-none').addEventListener('click', () => {
+    builderUsed = true;
     chosen.forEach(switchOff);
     chosen = [];
     rebuild();
@@ -1605,7 +1613,7 @@
     gallery[name] = item;
   }
   // Each theme's controls row, and its extras row with every button (the VPN lit).
-  const galleryExtras = extrasRow(Object.keys(EXTRA_INFO));
+  const galleryExtras = SHOWCASE;
   function drawGallery() {
     const shown = themeName;
     const playing = music.playing;
