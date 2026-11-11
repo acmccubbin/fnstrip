@@ -80,7 +80,12 @@ rest applies. Settings are only ever added, so your config keeps working on newe
 
 The VPN button works with any VPN (fnstrip reads no output from it): `command` toggles it,
 `status` lights the button while it exits 0, and `interface` names the tunnel for the traffic
-graph. `config/default.toml` has WireGuard, NetworkManager and Tailscale examples.
+graph. `config/default.toml` has WireGuard, NetworkManager and Tailscale examples, and common
+swaps for setups other than PipeWire and mako (PulseAudio, dunst, SwayNC).
+
+The meters find their sensors rather than assuming paths: CPU, memory, disk and network from
+the kernel, temperature from `coretemp`, fans from `applesmc`, the battery from the standard
+power-supply interface. A meter whose driver isn't loaded stays empty and says so in the log.
 
 Temperatures show in °C; `temperature_unit = "f"` shows °F.
 

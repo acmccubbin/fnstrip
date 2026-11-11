@@ -84,6 +84,24 @@
 #                   status = "tailscale status >/dev/null"         interface = "tailscale0"
 #
 # (wg-quick needs root; NetworkManager can bring WireGuard up and down as you.)
+#
+# Commands depend on your setup. Common swaps (any toggle icon can use any of them):
+#
+#   Mic mute, PipeWire (the default below):
+#                   command = "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle"
+#                   status = "! wpctl get-volume @DEFAULT_AUDIO_SOURCE@ | grep -q MUTED"
+#   Mic mute, PulseAudio:
+#                   command = "pactl set-source-mute @DEFAULT_SOURCE@ toggle"
+#                   status = "LC_ALL=C pactl get-source-mute @DEFAULT_SOURCE@ | grep -q 'Mute: no'"
+#   Do not disturb, mako:  command = "makoctl mode -t do-not-disturb"
+#                          status = "makoctl mode | grep -q do-not-disturb"
+#   Do not disturb, dunst: command = "dunstctl set-paused toggle"
+#                          status = "dunstctl is-paused | grep -q true"
+#   Do not disturb, SwayNC: command = "swaync-client -d"
+#                           status = "swaync-client -D | grep -q true"
+#
+# Try a command in a terminal first: if it works there, it works on the bar. The status
+# command must exit 0 exactly when the button should be lit (`echo $?` shows it).
 
 default_row = "controls"
 

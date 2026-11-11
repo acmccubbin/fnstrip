@@ -14,7 +14,7 @@ use crate::theme::FaceTint;
 use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::stock_labels::AlphaMask;
 use crate::stock_slice::{ExtraIcon, LIVE_ICON_WIDTH};
@@ -52,6 +52,10 @@ const HOT_BELOW_CRITICAL: f64 = 20.0;
 /// CPU package sensors: hwmon driver and its label (Intel, AMD).
 const PACKAGE_SENSORS: [(&str, &str); 2] = [("coretemp", "Package id 0"), ("k10temp", "Tctl")];
 const THERMAL_ZONE_TYPE: &str = "x86_pkg_temp";
+/// How often a temperature or fan meter without its sensor looks for it again.
+const SENSOR_SEARCH_INTERVAL: Duration = Duration::from_secs(30);
+/// Network drivers never counted by the `net` meter: the T1's own link to the Mac.
+const SKIPPED_NET_DRIVERS: [&str; 1] = ["apple_t1_ncm"];
 /// hwmon drivers with fan speeds (Apple's SMC).
 const FAN_DRIVERS: [&str; 1] = ["applesmc"];
 /// The fan graph's bottom, as a fraction of the lowest fan minimum.
@@ -146,6 +150,9 @@ pub(crate) struct Meter {
     sensor: Option<(PathBuf, f64)>,
     /// Fan: up to two fans (first, second), found at the first sample.
     fans: Vec<Fan>,
+    /// When the temperature or fan meter last looked for its sensor without finding it
+    /// (it looks again every [`SENSOR_SEARCH_INTERVAL`], in case its driver loads late).
+    searched: Option<Instant>,
     /// Temperature: print °F instead of °C (`temperature_unit = "f"`).
     fahrenheit: bool,
     /// The theme's recolouring of its face.
@@ -198,9 +205,32 @@ impl Meter {
             battery: None,
             sensor: None,
             fans: Vec::new(),
+            searched: None,
             fahrenheit: false,
             tint: FaceTint::None,
         })
+    }
+
+    /// Whether a missing sensor is due another look.
+    fn search_due(&self, now: Instant) -> bool {
+        self.searched
+            .is_none_or(|searched| now.duration_since(searched) >= SENSOR_SEARCH_INTERVAL)
+    }
+
+    /// Remembers a search; the first one that finds nothing is logged.
+    fn note_search(&mut self, now: Instant, missing: bool, meter: &str, driver: &str) {
+        if !missing {
+            self.searched = None;
+            return;
+        }
+        if self.searched.is_none() {
+            eprintln!(
+                "fnstrip: the {meter} meter found no sensor (is the `{driver}` driver loaded?); \
+                 it stays empty and looks again every {} s",
+                SENSOR_SEARCH_INTERVAL.as_secs()
+            );
+        }
+        self.searched = Some(now);
     }
 
     /// Temperature meters print °F instead of °C.
@@ -218,16 +248,19 @@ impl Meter {
         let sample = match self.kind {
             Kind::Memory => read_memory(),
             Kind::Fan => {
-                if self.fans.is_empty() {
+                if self.fans.is_empty() && self.search_due(now) {
                     self.fans = find_fans();
+                    self.note_search(now, self.fans.is_empty(), "fan", "applesmc");
                 }
                 // rpm of the first (left) and second (right) fan; 0 for a missing second.
                 let rpm = |index: usize| read_number(&self.fans.get(index)?.input);
                 rpm(0).map(|left| [left, rpm(1).unwrap_or(0.0)])
             }
             Kind::Temperature => {
-                if self.sensor.is_none() {
+                if self.sensor.is_none() && self.search_due(now) {
                     self.sensor = find_package_sensor();
+                    let missing = self.sensor.is_none();
+                    self.note_search(now, missing, "temperature", "coretemp");
                 }
                 self.sensor.as_ref().and_then(|(input, critical)| {
                     let celsius = read_millidegrees(input)?;
@@ -869,7 +902,13 @@ fn read_network(interface: Option<&str>) -> Option<Counters> {
 
 fn is_physical_and_up(name: &str) -> bool {
     let base = Path::new("/sys/class/net").join(name);
-    base.join("device").exists()
+    let driver = fs::read_link(base.join("device/driver")).ok();
+    let skipped = driver
+        .as_deref()
+        .and_then(Path::file_name)
+        .is_some_and(|driver| SKIPPED_NET_DRIVERS.iter().any(|skip| driver == *skip));
+    driver.is_some()
+        && !skipped
         && fs::read_to_string(base.join("operstate")).is_ok_and(|state| state.trim() == "up")
 }
 

@@ -53,7 +53,15 @@ tested on one machine, a 15" 2016 MacBookPro13,3.
 
 The VPN button reads no output from your VPN: `command` toggles it, `status` says whether it's
 up (exit code 0 = lit), and `interface` names its network interface for the traffic graph.
-`config/default.toml` has WireGuard, NetworkManager and Tailscale examples.
+`config/default.toml` has WireGuard, NetworkManager and Tailscale examples, plus common swaps
+for other setups (PulseAudio, dunst, SwayNC).
+
+### Meters on other models
+
+Each meter finds its sensor instead of assuming a path: temperature from `coretemp` (or the
+package thermal zone), fans from `applesmc`, the battery from the standard power-supply
+interface. A missing sensor leaves its meter empty, is logged once, and is looked for again
+every 30 seconds. The `net` meter never counts the T1's own link to the Mac.
 
 ### Also in the repository
 
