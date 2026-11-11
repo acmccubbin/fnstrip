@@ -6,6 +6,7 @@ use crate::framebuffer::{FramebufferError, Rectangle, Rgb, Xrgb8888Frame};
 use crate::gesture::{DisplayContact, Gesture};
 use crate::stock_art::{self, Symbol};
 use crate::stock_labels::{self, AlphaMask};
+use crate::theme::Theme;
 use crate::value_glyphs;
 
 const NATIVE_WIDTH: u32 = 2_170;
@@ -15,38 +16,10 @@ const FUNCTION_SLOT_COUNT: u32 = 13;
 const PLATE_Y: u32 = 0;
 const PLATE_HEIGHT: u32 = 60;
 const PLATE_RADIUS: u32 = 8;
-
-const BACKGROUND: Rgb = Rgb {
-    red: 0,
-    green: 0,
-    blue: 0,
-};
-const PLATE: Rgb = Rgb {
-    red: 53,
-    green: 53,
-    blue: 53,
-};
-const PRESSED_PLATE: Rgb = Rgb {
-    red: 76,
-    green: 76,
-    blue: 76,
-};
-const LABEL: Rgb = Rgb {
-    red: 242,
-    green: 242,
-    blue: 242,
-};
-// Plates of the extras layer (double-tap Fn) while their thing is on.
-const ON_PLATE: Rgb = Rgb {
-    red: 32,
-    green: 128,
-    blue: 64,
-};
-const ON_PRESSED_PLATE: Rgb = Rgb {
-    red: 58,
-    green: 164,
-    blue: 92,
-};
+/// Icons over live faces (meters, camera, spectra), which keep their own colours in every
+/// theme: light, with a dark halo.
+const LIVE_LABEL: Rgb = Theme::DEFAULT.label;
+const LIVE_HALO: Rgb = Theme::DEFAULT.background;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FunctionKey {
@@ -213,6 +186,11 @@ pub struct StockLevels {
     pub extras_live: u16,
     /// The battery meter's charge in quarters (0 to 4), for its icon's bars.
     pub battery_bars: u8,
+    /// Media is playing: the play/pause button is lit.
+    pub playing: bool,
+    /// The lit play/pause button shows the speakers' spectrum, drawn by the session like
+    /// a live extras face (see [`StockBar::render_live_media`]).
+    pub media_live: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -222,6 +200,8 @@ pub enum StockAction {
     StepDisplayBrightness(StepDirection),
     StepKeyboardBacklight(StepDirection),
     ToggleMute,
+    /// Keyboard backlight off, or back on to its last level (a tap on the slider's icon).
+    ToggleKeyboardBacklight,
     StepVolume(StepDirection),
     MediaPrevious,
     MediaPlayPause,
@@ -243,7 +223,8 @@ pub enum SliderKind {
 /// What a touch on a slider hit.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SliderSpot {
-    /// The volume slider's speaker icon: a tap toggles mute.
+    /// The volume slider's speaker icon (a tap toggles mute) or the keyboard slider's icon
+    /// (a tap turns the backlight off, and back on to its last level).
     Icon,
     /// This level, in percent.
     Level(u8),
@@ -337,21 +318,6 @@ const NORMAL_CONTROLS: [NativeControl; 6] = [
 /// the fill colours.
 const SLIDER_ICON_WIDTH: u32 = 72;
 const SLIDER_TEXT_MARGIN: u32 = 16;
-const SLIDER_FILL: Rgb = Rgb {
-    red: 110,
-    green: 110,
-    blue: 110,
-};
-const MUTED_FILL: Rgb = Rgb {
-    red: 72,
-    green: 72,
-    blue: 72,
-};
-const DIM_LABEL: Rgb = Rgb {
-    red: 150,
-    green: 150,
-    blue: 150,
-};
 
 /// Width of the left part of a graphing extras plate (meters, lit VPN) that holds the
 /// icon; the value is printed right of it.
@@ -376,6 +342,7 @@ pub struct StockBar {
     capabilities: StockCapabilities,
     extras: [Option<ExtraIcon>; MAX_EXTRAS],
     function_row_first: bool,
+    theme: Theme,
 }
 
 impl StockBar {
@@ -396,6 +363,7 @@ impl StockBar {
                 capabilities,
                 extras: [None; MAX_EXTRAS],
                 function_row_first: false,
+                theme: Theme::DEFAULT,
             })
         }
     }
@@ -411,6 +379,18 @@ impl StockBar {
     #[must_use]
     pub const fn function_row_first(self) -> bool {
         self.function_row_first
+    }
+
+    /// The same bar in these colours.
+    #[must_use]
+    pub const fn with_theme(mut self, theme: Theme) -> Self {
+        self.theme = theme;
+        self
+    }
+
+    #[must_use]
+    pub const fn theme(self) -> Theme {
+        self.theme
     }
 
     /// The same bar with these extras buttons (left to right; extra icons are ignored).
@@ -471,7 +451,7 @@ impl StockBar {
         if frame.width() != self.width || frame.height() != self.height {
             return Err(StockSliceError::FrameGeometryMismatch);
         }
-        frame.clear(BACKGROUND);
+        frame.clear(self.theme.background);
         match layer {
             Layer::Controls => self.render_normal_row(frame, levels, pressed),
             Layer::Function => self.render_function_row(frame, pressed),
@@ -526,7 +506,12 @@ impl StockBar {
         pressed: Option<StockAction>,
     ) -> Result<(), StockSliceError> {
         self.draw_plate(frame, self.escape_bounds(), StockAction::Escape, pressed)?;
-        stock_art::draw_label(frame, self.escape_bounds(), stock_labels::ESC, LABEL)?;
+        stock_art::draw_label(
+            frame,
+            self.escape_bounds(),
+            stock_labels::ESC,
+            self.theme.label,
+        )?;
         for item in self.normal_controls() {
             if !self.control_visible(item.control) {
                 continue;
@@ -535,17 +520,36 @@ impl StockBar {
                 self.draw_level_slider(frame, item.bounds, kind, levels)?;
                 continue;
             }
+            if item.control == Control::MediaPlayPause && levels.playing {
+                if !levels.media_live {
+                    let lit = if pressed == Some(StockAction::MediaPlayPause) {
+                        self.theme.lit_pressed
+                    } else {
+                        self.theme.lit
+                    };
+                    let radius = self.scaled_y(PLATE_RADIUS).max(1);
+                    stock_art::draw_rounded_plate(frame, item.bounds, radius, lit)?;
+                    stock_art::draw_symbol(
+                        frame,
+                        item.bounds,
+                        Symbol::PlayPause,
+                        self.theme.label,
+                    )?;
+                }
+                continue;
+            }
             if let Some(action) = control_action(item.control) {
                 self.draw_plate(frame, item.bounds, action, pressed)?;
             }
             let symbol = control_symbol(item.control);
-            stock_art::draw_symbol(frame, item.bounds, symbol, LABEL)?;
+            stock_art::draw_symbol(frame, item.bounds, symbol, self.theme.label)?;
         }
         Ok(())
     }
 
     /// A level slider: the plate filled from the left to the level, the icon at the left
-    /// and the percentage at the right. Muted volume shows the mute icon and a dim fill.
+    /// and the percentage at the right. Muted volume shows the mute icon and a dim fill; a
+    /// keyboard backlight at 0 (off) shows a dim icon and percentage.
     fn draw_level_slider(
         self,
         frame: &mut Xrgb8888Frame<'_>,
@@ -559,12 +563,18 @@ impl StockBar {
             SliderKind::Volume => levels.volume,
         };
         let muted = kind == SliderKind::Volume && levels.muted;
+        let off = kind == SliderKind::Keyboard && level == Some(0);
         let radius = self.scaled_y(PLATE_RADIUS).max(1);
-        stock_art::draw_rounded_plate(frame, bounds, radius, PLATE)?;
+        self.surface(frame, bounds, self.theme.plate)?;
         if let Some(level) = level {
             let filled = bounds.width * u32::from(level.min(100)) / 100;
-            let fill = if muted { MUTED_FILL } else { SLIDER_FILL };
-            stock_art::draw_plate_fill(frame, bounds, radius, filled, fill)?;
+            let fill = if muted {
+                self.theme.muted
+            } else {
+                self.theme.fill
+            };
+            let colour = self.theme.plate_colour(fill, bounds.x, self.width);
+            stock_art::draw_plate_fill(frame, bounds, radius, filled, colour)?;
         }
         let icon = Rectangle {
             width: self.scaled_x(SLIDER_ICON_WIDTH).min(bounds.width),
@@ -576,9 +586,22 @@ impl StockBar {
             SliderKind::Volume if muted => Symbol::Mute,
             SliderKind::Volume => Symbol::VolumeUp,
         };
-        stock_art::draw_symbol(frame, icon, symbol, LABEL)?;
+        stock_art::draw_symbol(
+            frame,
+            icon,
+            symbol,
+            if off {
+                self.theme.dim
+            } else {
+                self.theme.label
+            },
+        )?;
         if let Some(level) = level {
-            let text = if muted { DIM_LABEL } else { LABEL };
+            let text = if muted || off {
+                self.theme.dim
+            } else {
+                self.theme.label
+            };
             self.draw_percent(frame, bounds, level, text)?;
         }
         Ok(())
@@ -637,7 +660,7 @@ impl StockBar {
         let on_icon = x < item.bounds.x + self.scaled_x(SLIDER_ICON_WIDTH);
         Some((
             kind,
-            if kind == SliderKind::Volume && on_icon {
+            if matches!(kind, SliderKind::Volume | SliderKind::Keyboard) && on_icon {
                 SliderSpot::Icon
             } else {
                 SliderSpot::Level(self.slider_level_at(kind, contact.x()))
@@ -674,7 +697,7 @@ impl StockBar {
             }
             let action = function_action(slot).ok_or(StockSliceError::InvalidGeometry)?;
             self.draw_plate(frame, bounds, action, pressed)?;
-            stock_art::draw_label(frame, bounds, function_label(action)?, LABEL)?;
+            stock_art::draw_label(frame, bounds, function_label(action)?, self.theme.label)?;
         }
         Ok(())
     }
@@ -686,7 +709,12 @@ impl StockBar {
         pressed: Option<StockAction>,
     ) -> Result<(), StockSliceError> {
         self.draw_plate(frame, self.escape_bounds(), StockAction::Escape, pressed)?;
-        stock_art::draw_label(frame, self.escape_bounds(), stock_labels::ESC, LABEL)?;
+        stock_art::draw_label(
+            frame,
+            self.escape_bounds(),
+            stock_labels::ESC,
+            self.theme.label,
+        )?;
         for (index, icon, bounds) in self.extra_controls() {
             if levels.extras_live & (1 << index) != 0 {
                 continue;
@@ -694,19 +722,13 @@ impl StockBar {
             let is_pressed = pressed == Some(StockAction::Extra(index));
             let on = levels.extras_on & (1 << index) != 0;
             let symbol = icon.symbol(on, levels.battery_bars);
-            let color = match (on, is_pressed) {
-                (true, true) => ON_PRESSED_PLATE,
-                (true, false) => ON_PLATE,
-                (false, true) => PRESSED_PLATE,
-                (false, false) => PLATE,
-            };
-            stock_art::draw_rounded_plate(
-                frame,
-                bounds,
-                self.scaled_y(PLATE_RADIUS).max(1),
-                color,
-            )?;
-            stock_art::draw_symbol(frame, bounds, symbol, LABEL)?;
+            match (on, is_pressed) {
+                (true, true) => self.lit_plate(frame, bounds, self.theme.lit_pressed)?,
+                (true, false) => self.lit_plate(frame, bounds, self.theme.lit)?,
+                (false, true) => self.surface(frame, bounds, self.theme.pressed)?,
+                (false, false) => self.surface(frame, bounds, self.theme.plate)?,
+            }
+            stock_art::draw_symbol(frame, bounds, symbol, self.theme.label)?;
         }
         Ok(())
     }
@@ -729,10 +751,10 @@ impl StockBar {
                 continue;
             }
             if pressed == Some(StockAction::Extra(index)) {
-                frame.blend_rectangle(bounds, LABEL, 64)?;
+                frame.blend_rectangle(bounds, LIVE_LABEL, 64)?;
             }
             let radius = self.scaled_y(PLATE_RADIUS).max(1);
-            stock_art::draw_plate_corners(frame, bounds, radius, BACKGROUND)?;
+            stock_art::draw_plate_corners(frame, bounds, radius, self.theme.background)?;
             let icon_bounds = if icon.is_meter() || icon == ExtraIcon::Vpn {
                 Rectangle {
                     width: LIVE_ICON_WIDTH.min(bounds.width),
@@ -746,10 +768,50 @@ impl StockBar {
                 icon_bounds,
                 // Live toggles are always lit; the battery's lit look means on power.
                 icon.symbol(levels.extras_on & (1 << index) != 0, levels.battery_bars),
-                LABEL,
-                Some(BACKGROUND),
+                LIVE_LABEL,
+                Some(LIVE_HALO),
             )?;
         }
+        Ok(())
+    }
+
+    /// Where the play/pause button sits on the controls row, if it shows.
+    #[must_use]
+    pub(crate) fn play_pause_bounds(self) -> Option<Rectangle> {
+        self.normal_controls()
+            .into_iter()
+            .find(|item| {
+                item.control == Control::MediaPlayPause && self.control_visible(item.control)
+            })
+            .map(|item| item.bounds)
+    }
+
+    /// Finishes the live play/pause plate once its spectrum is drawn, as
+    /// [`StockBar::render_live_extras`] does for the extras.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an internally invalid draw.
+    pub(crate) fn render_live_media(
+        self,
+        frame: &mut Xrgb8888Frame<'_>,
+        pressed: Option<StockAction>,
+    ) -> Result<(), StockSliceError> {
+        let Some(bounds) = self.play_pause_bounds() else {
+            return Ok(());
+        };
+        if pressed == Some(StockAction::MediaPlayPause) {
+            frame.blend_rectangle(bounds, LIVE_LABEL, 64)?;
+        }
+        let radius = self.scaled_y(PLATE_RADIUS).max(1);
+        stock_art::draw_plate_corners(frame, bounds, radius, self.theme.background)?;
+        stock_art::draw_symbol_with_halo(
+            frame,
+            bounds,
+            Symbol::PlayPause,
+            LIVE_LABEL,
+            Some(LIVE_HALO),
+        )?;
         Ok(())
     }
 
@@ -801,16 +863,40 @@ impl StockBar {
         action: StockAction,
         pressed: Option<StockAction>,
     ) -> Result<(), StockSliceError> {
-        stock_art::draw_rounded_plate(
+        self.surface(
             frame,
             bounds,
-            self.scaled_y(PLATE_RADIUS).max(1),
             if pressed == Some(action) {
-                PRESSED_PLATE
+                self.theme.pressed
             } else {
-                PLATE
+                self.theme.plate
             },
-        )?;
+        )
+    }
+
+    /// A plate in a theme surface colour (`base`), in the button's hue for pastel and
+    /// rainbow.
+    fn surface(
+        self,
+        frame: &mut Xrgb8888Frame<'_>,
+        bounds: Rectangle,
+        base: Rgb,
+    ) -> Result<(), StockSliceError> {
+        let radius = self.scaled_y(PLATE_RADIUS).max(1);
+        let colour = self.theme.plate_colour(base, bounds.x, self.width);
+        stock_art::draw_rounded_plate(frame, bounds, radius, colour)?;
+        Ok(())
+    }
+
+    /// A lit plate: always the plain colour, so "on" reads the same in every theme.
+    fn lit_plate(
+        self,
+        frame: &mut Xrgb8888Frame<'_>,
+        bounds: Rectangle,
+        colour: Rgb,
+    ) -> Result<(), StockSliceError> {
+        let radius = self.scaled_y(PLATE_RADIUS).max(1);
+        stock_art::draw_rounded_plate(frame, bounds, radius, colour)?;
         Ok(())
     }
 
@@ -1172,6 +1258,39 @@ mod tests {
             .map(|(index, _, bounds)| (index, bounds.x))
             .collect();
         assert_eq!(lefts, [(0, 194), (1, 1_798), (2, 384), (3, 1_988)]);
+    }
+
+    #[test]
+    fn play_pause_is_green_while_playing_and_left_black_for_the_spectrum() {
+        let bar = StockBar::new(NATIVE_WIDTH, NATIVE_HEIGHT, all()).unwrap();
+        let bounds = bar.play_pause_bounds().unwrap();
+        assert_eq!(bounds.x, 1_200);
+        let edge = |levels: StockLevels| {
+            let mut pixels = vec![0_u8; usize::try_from(NATIVE_WIDTH * NATIVE_HEIGHT * 4).unwrap()];
+            let mut frame =
+                Xrgb8888Frame::new(NATIVE_WIDTH, NATIVE_HEIGHT, NATIVE_WIDTH * 4, &mut pixels)
+                    .unwrap();
+            bar.render_pressed(&mut frame, Layer::Controls, levels, None)
+                .unwrap();
+            let offset =
+                usize::try_from(((bounds.y + bounds.height / 2) * NATIVE_WIDTH + bounds.x + 6) * 4)
+                    .unwrap();
+            [pixels[offset], pixels[offset + 1], pixels[offset + 2]]
+        };
+        let idle = edge(StockLevels::default());
+        let playing = edge(StockLevels {
+            playing: true,
+            ..StockLevels::default()
+        });
+        let live = edge(StockLevels {
+            playing: true,
+            media_live: true,
+            ..StockLevels::default()
+        });
+        let (lit, black) = (Theme::DEFAULT.lit, Theme::DEFAULT.background);
+        assert_eq!(playing, [lit.blue, lit.green, lit.red]);
+        assert_ne!(idle, playing);
+        assert_eq!(live, [black.blue, black.green, black.red]);
     }
 
     #[test]

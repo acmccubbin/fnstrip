@@ -10,6 +10,29 @@
 #               "function" (Esc + F1-F12; the controls while Fn is held). Goes above the
 #               first [[extras]].
 #
+# startup_animation = "on" (default: a light show with the fnstrip logo when the renderer
+#               starts; a touch or Fn skips it) or "off". Also above the first [[extras]].
+#
+# debug_gestures = "off" (default) or "on": Fn triple-tap-and-hold shows the test screen
+#               (animations with frame-rate stats; tap to step, the right end or Fn to
+#               leave), and Fn quad-tap switches to the next theme until fnstrip restarts.
+#               Also above the first [[extras]].
+#
+# temperature_unit = "c" (default) or "f": the temperature meter in °C or °F. Also above the
+#               first [[extras]].
+#
+# theme = "default", "mono", "pastel" or "rainbow": the colours of the whole bar, meters
+#               and spectra included (mono is grey throughout, the camera too; pastel and
+#               rainbow give every button its own colour). Also above the first [[extras]].
+#
+# [colors]: optional, overrides single colours of the theme, as "#rrggbb": background,
+#               plate, pressed, label, dim (muted or off icons), lit and lit_pressed (buttons
+#               that are on), fill and muted (slider fills). For example:
+#
+#   theme = "mono"
+#   [colors]
+#   lit = "#c0392b"
+#
 # [[extras]]: buttons of the extras row (double-tap Fn; it stays until the next Fn press),
 # up to 10.
 #   icon    = camera | mic | vpn  (toggles, left after Esc, in this order; each has an on
@@ -18,7 +41,7 @@
 #           | cpu | mem | disk | net | battery | temp | fan  (meters, at the right end: a
 #             live graph and value; the battery fills to its charge, its icon shows quarters
 #             and a bolt while on power, green on power, amber at 20% and red at 10%, with
-#             the time to empty or full; temp is the CPU package in °C, red within 20° of
+#             the time to empty or full; temp is the CPU package in °C or °F, red within 20 °C of
 #             critical; fan is the first two fans' rpm, as lines on one scale from just
 #             under the lowest fan minimum to the highest maximum)
 #   command = run with `sh -c` when tapped (optional for meters)

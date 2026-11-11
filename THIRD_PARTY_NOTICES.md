@@ -30,12 +30,26 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+## Project page fonts
+
+`docs/site/fonts/` holds the Latin subsets of [Inter](https://github.com/rsms/inter) and
+[JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) as WOFF2, as served by Google
+Fonts, for the project page.
+
+Inter: Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter)
+
+JetBrains Mono: Copyright 2020 The JetBrains Mono Project Authors
+(https://github.com/JetBrains/JetBrainsMono)
+
+Both are under the SIL Open Font License 1.1, whose full text is in the next section.
+
 ## Fonts: Inter and Adwaita Sans
 
 Key labels inherited from T1Bridge use [Inter 4.1](https://github.com/rsms/inter/releases/tag/v4.1)
 (`extras/otf/Inter-Medium.otf`). The meters' and sliders' digits use
 [Adwaita Sans](https://gitlab.gnome.org/GNOME/adwaita-fonts) 51.0 Medium, via
-`tools/value_glyphs.py`.
+`tools/value_glyphs.py`; the startup animation's "fnstrip" wordmark uses Adwaita Sans Bold, via
+`tools/wordmark.py`.
 
 Inter: Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter)
 

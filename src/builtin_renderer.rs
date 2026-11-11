@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::Path;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -24,12 +25,15 @@ use crate::desktop_provider::{DesktopAction, DesktopCapabilities, DesktopProvide
 use crate::extras::{Extras, LiveFaces};
 use crate::framebuffer::Xrgb8888Frame;
 use crate::gesture::{DisplayContact, GestureEngine, GestureSettings};
+use crate::intro::Intro;
+use crate::media::MediaWatch;
 use crate::overlay_state::{OverlayState, OverlayWatcher};
 use crate::screensaver::{Screensaver, Zone};
 use crate::stock_slice::{
     FunctionKey, Layer, SliderKind, SliderSpot, StepDirection, StockAction, StockBar,
     StockCapabilities, StockLevels,
 };
+use crate::theme::Theme;
 use crate::touch_id_overlay::TouchIdOverlay;
 
 const BUFFER_ID: u32 = 1;
@@ -41,6 +45,8 @@ const RECEIVE_RETRY_DELAY: Duration = Duration::from_millis(5);
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_millis(50);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(2);
 const VOLUME_STEP_PERCENT: u8 = 6;
+/// The keyboard backlight's level when its icon turns it on with no earlier level to restore.
+const KEYBOARD_ON_DEFAULT: u8 = 50;
 /// Brightness and keyboard backlight levels are re-read this often (the keyboard's keys
 /// change them too). Levels read or reported this soon after a slider set one are ignored
 /// (the set lands late, and the reports lag a drag).
@@ -65,6 +71,9 @@ const STOCK_FRAME_INTERVAL: Duration = Duration::from_millis(25);
 /// buffer is reused quickly (the socket is non-blocking and std has no poll).
 const SCREENSAVER_POLL_DELAY: Duration = Duration::from_millis(1);
 const MAX_SCREENSAVER_BUFFERS: u32 = 3;
+/// The startup animation draws full frames into up to two buffers, uncapped: about 95 fps
+/// on the test screen's full-frame scenes, against about 70 with one.
+const INTRO_BUFFERS: usize = 2;
 
 /// Static, redaction-safe failure from one hardware-service connection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -94,18 +103,44 @@ impl fmt::Display for BuiltinRendererError {
 
 impl std::error::Error for BuiltinRendererError {}
 
+/// The config's settings each new session takes on.
+#[derive(Clone, Copy)]
+#[allow(clippy::struct_excessive_bools, reason = "independent on/off settings")]
+struct Settings {
+    function_row_first: bool,
+    theme: Theme,
+    fahrenheit: bool,
+    debug_gestures: bool,
+}
+
 /// Runs the built-in renderer and reconnects forever with capped backoff.
 pub fn run_forever(provider_path: Option<&Path>) {
     let provider = provider_path.and_then(DesktopProvider::start);
     let config = Config::load();
-    let function_row_first = config.function_row_first;
+    let settings = Settings {
+        function_row_first: config.function_row_first,
+        theme: config.theme,
+        fahrenheit: config.fahrenheit,
+        debug_gestures: config.debug_gestures,
+    };
     let extras = Extras::start(config.extras);
+    // Once per start, not on every reconnect (such as after sleep).
+    let mut intro_pending = config.startup_animation;
+    let media = MediaWatch::start().map(Arc::new);
     let mut delay = INITIAL_RECONNECT_DELAY;
     loop {
         if let Err(error) = t1_platform::diagnostics::observe(
             t1_platform::diagnostics::Component::Renderer,
             t1_platform::diagnostics::Stage::RendererConnect,
-            || run_once(provider.as_ref(), &extras, function_row_first),
+            || {
+                run_once(
+                    provider.as_ref(),
+                    &extras,
+                    settings,
+                    &mut intro_pending,
+                    media.as_ref(),
+                )
+            },
         ) {
             eprintln!("t1-touchbar: {error}; reconnecting");
         }
@@ -130,7 +165,9 @@ fn next_reconnect_delay(delay: Duration) -> Duration {
 fn run_once(
     provider: Option<&DesktopProvider>,
     extras: &Extras,
-    function_row_first: bool,
+    settings: Settings,
+    intro_pending: &mut bool,
+    media: Option<&Arc<MediaWatch>>,
 ) -> Result<(), BuiltinRendererError> {
     let NegotiatedConnection {
         mut connection,
@@ -145,10 +182,17 @@ fn run_once(
         request_ids,
         stock_capabilities(features, ack.minor),
     )?;
-    session.set_function_row_first(function_row_first);
+    session.set_function_row_first(settings.function_row_first);
+    session.set_theme(settings.theme);
+    session.live_faces.set_fahrenheit(settings.fahrenheit);
+    session.input.set_debug_gestures(settings.debug_gestures);
     session.set_extras(extras.clone());
+    session.media = media.cloned();
     session.max_buffers = ack.max_buffers;
     session.register(&connection)?;
+    if std::mem::take(intro_pending) {
+        session.intro = Some(Intro::new(dimensions.width(), dimensions.height()));
+    }
     let overlay_watcher = OverlayWatcher::start();
     let clock = Instant::now();
 
@@ -172,7 +216,7 @@ fn run_once(
         session.submit_if_ready(&connection)?;
         if let Some(envelope) = connection.try_receive_service(Some(dimensions))? {
             session.handle_with_provider(envelope, &connection, provider)?;
-        } else if session.screensaver.is_some() {
+        } else if session.screensaver.is_some() || session.intro.is_some() {
             thread::sleep(SCREENSAVER_POLL_DELAY);
         } else {
             thread::sleep(RECEIVE_RETRY_DELAY);
@@ -358,6 +402,16 @@ fn desktop_stock_capabilities(state: DesktopState) -> StockCapabilities {
     capabilities
 }
 
+/// The keyboard icon's tap: from `current`, the level to set and the level to restore next.
+/// On (above 0): off, remembering the level. Off: back to the remembered level, or a default.
+fn keyboard_toggle(current: u8, restore: Option<u8>) -> (u8, Option<u8>) {
+    if current > 0 {
+        (0, Some(current))
+    } else {
+        (restore.unwrap_or(KEYBOARD_ON_DEFAULT), restore)
+    }
+}
+
 fn dispatch_desktop(provider: Option<&DesktopProvider>, action: DesktopAction) {
     if let Some(provider) = provider {
         let _ = provider.dispatch(action);
@@ -380,8 +434,9 @@ struct InFlightFrame {
     acknowledged: bool,
 }
 
-/// An extra frame buffer, registered the first time the screensaver asks for more than
-/// one and only ever used by it, so the stock bar keeps upstream's single-buffer flow.
+/// An extra frame buffer, registered the first time the screensaver or the startup
+/// animation asks for more than one and only ever used by them, so the stock bar keeps
+/// upstream's single-buffer flow.
 struct SpareBuffer {
     id: u32,
     frame: RendererFrame,
@@ -431,9 +486,17 @@ struct RendererSession {
     extras_visible: bool,
     live_faces: LiveFaces,
     live_faces_drawn: Duration,
+    /// Watches whether media plays, for the play/pause button (none in tests).
+    media: Option<Arc<MediaWatch>>,
+    /// The config's theme, and where a quad-tap of Fn (debug gestures) has stepped to:
+    /// 0 = the configured theme, `n` = `Theme::NAMES[n - 1]`.
+    configured_theme: Theme,
+    theme_step: usize,
     /// Started on the first change from their sliders.
     display_light: Option<brightness::Setter>,
     keyboard_light: Option<brightness::Setter>,
+    /// The keyboard backlight's last level above 0, for its icon to turn it back on to.
+    keyboard_restore: Option<u8>,
     lights_polled: Option<Duration>,
     lights_set_at: Option<Duration>,
     volume_set_at: Option<Duration>,
@@ -443,6 +506,13 @@ struct RendererSession {
     max_buffers: u32,
     spares: Vec<SpareBuffer>,
     screensaver: Option<Screensaver>,
+    /// The startup animation, while it plays.
+    intro: Option<Intro>,
+    /// The stock frame the animation last drew over, for the frames it draws into a spare
+    /// buffer (the primary one, where the stock bar renders, may be in flight then).
+    intro_base: Vec<u8>,
+    /// The clock reading of the animation's last frame (a repeat would be the same frame).
+    intro_drawn: Option<Duration>,
     /// What the panel shows after our last stock frame, to send only what changed.
     /// `None` after the screensaver drew, or before the first frame: send it whole.
     shown: Option<Vec<u8>>,
@@ -500,9 +570,13 @@ impl RendererSession {
             extras: None,
             extras_visible: false,
             live_faces: LiveFaces::default(),
+            media: None,
+            configured_theme: Theme::DEFAULT,
+            theme_step: 0,
             live_faces_drawn: Duration::ZERO,
             display_light: None,
             keyboard_light: None,
+            keyboard_restore: None,
             lights_polled: None,
             lights_set_at: None,
             volume_set_at: None,
@@ -510,6 +584,9 @@ impl RendererSession {
             max_buffers: 1,
             spares: Vec::new(),
             screensaver: None,
+            intro: None,
+            intro_base: Vec::new(),
+            intro_drawn: None,
             shown: None,
         })
     }
@@ -720,6 +797,19 @@ impl RendererSession {
                 contacts.join(" ")
             ));
         }
+        // A touch or an Fn press skips the startup animation; the touch doesn't press
+        // whatever is under it.
+        if self.intro.is_some()
+            && (frame.fn_pressed != self.input.fn_pressed
+                || frame.contacts.iter().any(|contact| contact.tip))
+        {
+            self.stop_intro(if frame.fn_pressed == self.input.fn_pressed {
+                "skipped (touch)"
+            } else {
+                "skipped (Fn)"
+            });
+            self.input.wait_for_touch_release |= frame.contacts.iter().any(|contact| contact.tip);
+        }
         // The screensaver takes every touch (none reach the bar) and a new Fn press.
         let mut stop_screensaver = false;
         if let Some(saver) = self.screensaver.as_mut() {
@@ -743,10 +833,33 @@ impl RendererSession {
             frame.contacts.clear();
         }
         let outcome = self.input.ingest_at(&frame, self.overlay_state, self.now)?;
-        if self.input.take_screensaver_request() {
+        self.take_debug_requests();
+        Ok(outcome)
+    }
+
+    /// Acts on a triple-tap-and-hold (test screen) or quad-tap (next theme) of Fn.
+    fn take_debug_requests(&mut self) {
+        if self.input.take_screensaver_request(self.now) {
             self.start_screensaver();
         }
-        Ok(outcome)
+        if self.input.take_theme_request() {
+            self.next_theme();
+        }
+    }
+
+    /// Debug gestures: the next built-in theme, then back to the configured one. Until restart.
+    fn next_theme(&mut self) {
+        self.theme_step = (self.theme_step + 1) % (Theme::NAMES.len() + 1);
+        let (name, theme) = match Theme::NAMES.get(self.theme_step.wrapping_sub(1)) {
+            Some(name) if self.theme_step > 0 => (*name, Theme::named(name).unwrap_or_default()),
+            _ => ("from the config", self.configured_theme),
+        };
+        eprintln!("fnstrip: theme {name} (debug gesture; restart for the configured one)");
+        self.live_faces.set_theme(theme);
+        // Only colours change, not where anything is, so touches in progress carry on.
+        self.stock = self.stock.with_theme(theme);
+        self.input.stock = self.stock;
+        self.dirty = true;
     }
 
     fn start_screensaver(&mut self) {
@@ -762,6 +875,22 @@ impl RendererSession {
         self.dirty = true;
     }
 
+    /// Ends the startup animation and logs how it went (`why`: played, skipped, …).
+    fn stop_intro(&mut self, why: &str) {
+        if let Some(intro) = self.intro.take() {
+            let seconds = self.now.saturating_sub(intro.started().unwrap_or(self.now));
+            eprintln!(
+                "fnstrip: startup animation {why}: {} frames in {:.2} s",
+                intro.frames(),
+                seconds.as_secs_f64()
+            );
+            self.intro_base = Vec::new();
+            self.intro_drawn = None;
+            self.shown = None;
+            self.dirty = true;
+        }
+    }
+
     fn stop_screensaver(&mut self) {
         if let Some(mut saver) = self.screensaver.take() {
             saver.finish();
@@ -769,7 +898,8 @@ impl RendererSession {
         }
     }
 
-    /// Registers the spare buffers (once per connection) for screensaver pipelining.
+    /// Registers the spare buffers (once per connection) for screensaver and startup
+    /// animation pipelining.
     fn register_spares(
         &mut self,
         connection: &HardwareConnection,
@@ -806,12 +936,17 @@ impl RendererSession {
     }
 
     /// A buffer we may draw into now: the primary one, or while the screensaver runs
-    /// with more than one buffer, a registered spare.
+    /// with more than one buffer, or the startup animation plays, a registered spare.
     fn free_slot(&self) -> Option<BufferSlot> {
         if self.in_flight.is_none() {
             return Some(BufferSlot::Primary);
         }
-        let spares = self.screensaver.as_ref()?.buffers().saturating_sub(1);
+        let buffers = match (&self.screensaver, &self.intro) {
+            (Some(saver), _) => saver.buffers(),
+            (None, Some(_)) if !self.intro_base.is_empty() => INTRO_BUFFERS,
+            _ => return None,
+        };
+        let spares = buffers.saturating_sub(1);
         self.spares
             .iter()
             .take(spares)
@@ -944,32 +1079,49 @@ impl RendererSession {
                 dispatch_desktop(provider, DesktopAction::SetVolume(value));
                 Ok(())
             }
+            StockAction::ToggleKeyboardBacklight => {
+                let Some(current) = self.levels.keyboard_backlight else {
+                    return Ok(()); // no backlight level known (none, or not read yet)
+                };
+                let (value, restore) = keyboard_toggle(current, self.keyboard_restore);
+                self.keyboard_restore = restore;
+                self.set_light(SliderKind::Keyboard, value);
+                Ok(())
+            }
             StockAction::SetLevel(
                 kind @ (SliderKind::Brightness | SliderKind::Keyboard),
                 value,
             ) => {
-                let (light, level, setter) = match kind {
-                    SliderKind::Brightness => (
-                        Light::Display,
-                        &mut self.levels.display_brightness,
-                        &mut self.display_light,
-                    ),
-                    _ => (
-                        Light::Keyboard,
-                        &mut self.levels.keyboard_backlight,
-                        &mut self.keyboard_light,
-                    ),
-                };
-                *level = Some(value);
-                setter
-                    .get_or_insert_with(|| brightness::Setter::start(light))
-                    .set(value);
-                self.lights_set_at = Some(self.now);
-                self.dirty = true;
+                self.set_light(kind, value);
                 Ok(())
             }
             StockAction::Escape | StockAction::Function(_) => unreachable!(),
         }
+    }
+
+    /// Sets the display brightness or keyboard backlight from its slider (or icon).
+    fn set_light(&mut self, kind: SliderKind, value: u8) {
+        if kind == SliderKind::Keyboard && value > 0 {
+            self.keyboard_restore = Some(value);
+        }
+        let (light, level, setter) = match kind {
+            SliderKind::Brightness => (
+                Light::Display,
+                &mut self.levels.display_brightness,
+                &mut self.display_light,
+            ),
+            _ => (
+                Light::Keyboard,
+                &mut self.levels.keyboard_backlight,
+                &mut self.keyboard_light,
+            ),
+        };
+        *level = Some(value);
+        setter
+            .get_or_insert_with(|| brightness::Setter::start(light))
+            .set(value);
+        self.lights_set_at = Some(self.now);
+        self.dirty = true;
     }
 
     fn send_hardware_action(
@@ -1001,10 +1153,15 @@ impl RendererSession {
             .screensaver
             .as_ref()
             .is_some_and(|saver| saver.buffers() > 1)
+            || (self.intro.is_some() && self.max_buffers > 1)
         {
             self.register_spares(connection)?;
         }
+        if self.intro.is_some() && self.intro_drawn == Some(self.now) {
+            return Ok(());
+        }
         if self.screensaver.is_none()
+            && self.intro.is_none()
             && self
                 .stock_submitted
                 .is_some_and(|at| self.now.saturating_sub(at) < STOCK_FRAME_INTERVAL)
@@ -1020,6 +1177,8 @@ impl RendererSession {
                 if let Some(saver) = self.screensaver.as_mut() {
                     damage = saver.render(self.frame.as_mut_slice());
                     self.shown = None;
+                } else if self.intro.is_some() {
+                    self.render_intro(slot)?;
                 } else {
                     self.render()?;
                     if !self.stock_changed() {
@@ -1030,12 +1189,13 @@ impl RendererSession {
                 BUFFER_ID
             }
             BufferSlot::Spare(index) => {
-                let spare = &mut self.spares[index];
                 if let Some(saver) = self.screensaver.as_mut() {
-                    damage = saver.render(spare.frame.as_mut_slice());
+                    damage = saver.render(self.spares[index].frame.as_mut_slice());
+                } else {
+                    self.render_intro(slot)?;
                 }
                 self.shown = None;
-                spare.id
+                self.spares[index].id
             }
         };
         let frame_id = self.take_frame_id();
@@ -1081,6 +1241,30 @@ impl RendererSession {
         Ok(())
     }
 
+    /// A startup animation frame into `slot`: over a fresh stock frame in the primary
+    /// buffer (kept for later spare frames), or over the last one in a spare.
+    fn render_intro(&mut self, slot: BufferSlot) -> Result<(), BuiltinRendererError> {
+        let pixels = match slot {
+            BufferSlot::Primary => {
+                self.render()?;
+                self.intro_base.clear();
+                self.intro_base.extend_from_slice(self.frame.as_mut_slice());
+                self.frame.as_mut_slice()
+            }
+            BufferSlot::Spare(index) => {
+                let pixels = self.spares[index].frame.as_mut_slice();
+                pixels.copy_from_slice(&self.intro_base);
+                pixels
+            }
+        };
+        if let Some(intro) = self.intro.as_mut() {
+            intro.draw(pixels, self.now);
+        }
+        self.intro_drawn = Some(self.now);
+        self.shown = None;
+        Ok(())
+    }
+
     /// Whether the freshly rendered stock frame differs from what the panel shows, and
     /// records it as shown. Stock frames always go whole (empty damage): the panel stalls
     /// ~1 s (appletbdrm -110) on a few percent of partial updates of every shape we tried,
@@ -1123,6 +1307,7 @@ impl RendererSession {
                         self.stride as usize,
                         index,
                         bounds,
+                        self.dimensions.width(),
                     );
                 }
             }
@@ -1130,6 +1315,23 @@ impl RendererSession {
                 .render_live_extras(
                     &mut xrgb_frame(self.dimensions, self.stride, self.frame.as_mut_slice())?,
                     levels,
+                    pressed,
+                )
+                .map_err(|_| BuiltinRendererError::Frame)?;
+        }
+        if layer == Layer::Controls
+            && levels.media_live
+            && let Some(bounds) = self.stock.play_pause_bounds()
+        {
+            self.live_faces.draw_speakers(
+                self.frame.as_mut_slice(),
+                self.stride as usize,
+                bounds,
+                self.dimensions.width(),
+            );
+            self.stock
+                .render_live_media(
+                    &mut xrgb_frame(self.dimensions, self.stride, self.frame.as_mut_slice())?,
                     pressed,
                 )
                 .map_err(|_| BuiltinRendererError::Frame)?;
@@ -1240,6 +1442,15 @@ impl RendererSession {
         self.dirty = true;
     }
 
+    fn set_theme(&mut self, theme: Theme) {
+        self.configured_theme = theme;
+        self.theme_step = 0;
+        self.live_faces.set_theme(theme);
+        self.stock = self.stock.with_theme(theme);
+        self.input.set_stock(self.stock);
+        self.dirty = true;
+    }
+
     /// Adopts the configured extras buttons (layout from their icons).
     fn set_extras(&mut self, extras: Extras) {
         self.stock = self.stock.with_extras(extras.icons());
@@ -1286,6 +1497,28 @@ impl RendererSession {
             self.levels.battery_bars = bars;
             self.dirty = true;
         }
+        self.sync_media();
+    }
+
+    /// Lights the play/pause button while media plays, with the speakers' spectrum.
+    fn sync_media(&mut self) {
+        let controls = !self.display_off
+            && self.overlay_state.is_none()
+            && self.input.layer() == Layer::Controls;
+        let playing = self.media.as_ref().is_some_and(|media| {
+            media.set_watching(controls);
+            media.playing()
+        });
+        let width = self
+            .stock
+            .play_pause_bounds()
+            .map_or(0, |bounds| bounds.width as usize);
+        let live = self.live_faces.sync_speakers(controls && playing, width);
+        if playing != self.levels.playing || live != self.levels.media_live {
+            self.levels.playing = playing;
+            self.levels.media_live = live;
+            self.dirty = true;
+        }
     }
 
     fn set_overlay(&mut self, state: Option<OverlayState>, progress: Option<u8>) {
@@ -1330,15 +1563,30 @@ impl RendererSession {
         provider: Option<&DesktopProvider>,
     ) -> Result<(), BuiltinRendererError> {
         self.now = now;
+        // A third Fn press held long enough starts the test screen, with no new input.
+        self.take_debug_requests();
         self.advance_overlay_fade(now);
         self.advance_enrollment_progress(now);
         if self.display_off || self.overlay_state.is_some() {
             self.stop_screensaver();
+            self.stop_intro(if self.display_off {
+                "stopped (display off)"
+            } else {
+                "stopped (Touch ID)"
+            });
+        }
+        if let Some(intro) = &self.intro {
+            if intro.finished(now) {
+                self.stop_intro("played");
+            } else {
+                self.dirty = true;
+            }
         }
         self.poll_lights(now);
         let animate = self.live_faces.animating()
             && now.saturating_sub(self.live_faces_drawn) >= LIVE_FACE_INTERVAL;
-        if self.levels.extras_live != 0 && (animate || self.live_faces.take_fresh()) {
+        let live = self.levels.extras_live != 0 || self.levels.media_live;
+        if live && (animate || self.live_faces.take_fresh()) {
             self.live_faces_drawn = now;
             self.dirty = true;
         }
@@ -1456,7 +1704,8 @@ impl RendererSession {
         )
         .map_err(|_| BuiltinRendererError::Negotiation)?
         .with_extras(self.extras.as_ref().map_or(&[], Extras::icons))
-        .with_function_row_first(self.stock.function_row_first());
+        .with_function_row_first(self.stock.function_row_first())
+        .with_theme(self.stock.theme());
         self.stock = stock;
         self.input.set_stock(stock);
         self.levels.volume = self.reported_volume(state.volume);
@@ -1622,7 +1871,7 @@ impl InputInterpreter {
             }
             (Some(touch), Some(contact)) if touch.on_icon => {
                 touch.on_icon =
-                    self.stock.slider_at(*contact) == Some((SliderKind::Volume, SliderSpot::Icon));
+                    self.stock.slider_at(*contact) == Some((touch.kind, SliderSpot::Icon));
                 None
             }
             (Some(touch), Some(contact)) => {
@@ -1630,7 +1879,10 @@ impl InputInterpreter {
             }
             (Some(touch), None) => {
                 if touch.on_icon {
-                    actions.push(StockAction::ToggleMute);
+                    actions.push(match touch.kind {
+                        SliderKind::Volume => StockAction::ToggleMute,
+                        _ => StockAction::ToggleKeyboardBacklight,
+                    });
                 }
                 self.slider = None;
                 None
@@ -1666,11 +1918,24 @@ impl InputInterpreter {
         }
     }
 
-    /// True once after a triple-tap-and-hold of Fn.
-    const fn take_screensaver_request(&mut self) -> bool {
+    /// True once after a triple-tap-and-hold of Fn (debug gestures), as of session time `now`.
+    const fn take_screensaver_request(&mut self, now: Duration) -> bool {
+        self.fn_taps.poll(now);
         let requested = self.fn_taps.screensaver;
         self.fn_taps.screensaver = false;
         requested
+    }
+
+    /// True once after a quad-tap of Fn (debug gestures).
+    const fn take_theme_request(&mut self) -> bool {
+        let requested = self.fn_taps.next_theme;
+        self.fn_taps.next_theme = false;
+        requested
+    }
+
+    /// Lets triple-tap-and-hold (test screen) and quad-tap (next theme) through.
+    const fn set_debug_gestures(&mut self, on: bool) {
+        self.fn_taps.debug = on;
     }
 
     const fn pressed(&self) -> Option<StockAction> {
@@ -1710,6 +1975,7 @@ impl InputInterpreter {
         let mut redraw = self.fn_pressed != frame.fn_pressed;
         self.fn_taps.observe(
             Duration::from_nanos(frame.monotonic_ns),
+            now,
             self.fn_pressed,
             frame.fn_pressed,
             frame.contacts.iter().any(|contact| contact.tip),
@@ -1835,32 +2101,65 @@ impl InputInterpreter {
     }
 }
 
-/// Recognises double-tap and triple-tap-and-hold on Fn, using the hardware's input
-/// timestamps.
+/// Recognises Fn taps, using the hardware's input timestamps: a double-tap shows the extras
+/// row, and, with debug gestures on (`debug_gestures = "on"`), a triple-tap-and-hold shows
+/// the test screen and a quad-tap switches to the next theme.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "a tap recogniser's independent flags"
+)]
 struct FnTaps {
+    /// Triple-tap-and-hold and quad-tap count only with this on.
+    debug: bool,
     pressed_at: Duration,
     touched: bool,
     tap_released_at: Option<Duration>,
     /// Quick untouched taps in a row, up to the last release.
     taps: u8,
-    /// Taps chained before the current press: 1 = double-tap (extras row),
-    /// 2 = triple-tap-and-hold (screensaver, which ends the chain).
+    /// Taps chained before the current press: 1 = double-tap (extras row), 2 = a third
+    /// press (the test screen if held), 3 = quad-tap (next theme, which ends the chain).
     taps_before_press: u8,
+    /// A third press, and when (session time) it went down: held long enough, it starts
+    /// the test screen; released quickly, it's a tap toward a quad-tap.
+    hold_since: Option<Duration>,
+    /// The current press already did its thing, so its release isn't a tap.
+    chain_over: bool,
     screensaver: bool,
+    next_theme: bool,
     /// The extras row stays after a double-tap until the next Fn press.
     extras_latched: bool,
 }
 
 impl FnTaps {
-    fn observe(&mut self, at: Duration, was_pressed: bool, pressed: bool, touching: bool) {
+    /// Taps the chain can hold: up to a quad-tap with debug gestures, else a double-tap.
+    const fn longest_chain(&self) -> u8 {
+        if self.debug { 3 } else { 1 }
+    }
+
+    /// `at`: the input's hardware timestamp; `now`: session time, for the hold.
+    fn observe(
+        &mut self,
+        at: Duration,
+        now: Duration,
+        was_pressed: bool,
+        pressed: bool,
+        touching: bool,
+    ) {
         match (was_pressed, pressed) {
             (false, true) => {
                 let chained = self
                     .tap_released_at
                     .is_some_and(|released| at.saturating_sub(released) <= FN_DOUBLE_TAP_GAP);
                 self.taps_before_press = if chained { self.taps } else { 0 };
-                self.screensaver |= self.taps_before_press >= 2;
+                self.chain_over = false;
+                self.hold_since = None;
+                if self.debug && self.taps_before_press == 2 {
+                    self.hold_since = Some(now);
+                } else if self.debug && self.taps_before_press == 3 {
+                    self.next_theme = true;
+                    self.chain_over = true;
+                }
                 self.extras_latched = self.taps_before_press == 1;
                 self.tap_released_at = None;
                 self.pressed_at = at;
@@ -1868,7 +2167,8 @@ impl FnTaps {
             }
             (true, true) => self.touched |= touching,
             (true, false) => {
-                let was_tap = self.taps_before_press < 2
+                let was_tap = !self.chain_over
+                    && self.taps_before_press <= self.longest_chain()
                     && !self.touched
                     && at.saturating_sub(self.pressed_at) <= FN_TAP_MAX;
                 self.taps = if was_tap {
@@ -1878,8 +2178,20 @@ impl FnTaps {
                 };
                 self.tap_released_at = was_tap.then_some(at);
                 self.taps_before_press = 0;
+                self.hold_since = None;
             }
             (false, false) => {}
+        }
+    }
+
+    /// A third press held for [`FN_TAP_MAX`] (session time `now`) starts the test screen.
+    const fn poll(&mut self, now: Duration) {
+        if let Some(since) = self.hold_since
+            && now.saturating_sub(since).as_nanos() >= FN_TAP_MAX.as_nanos()
+        {
+            self.hold_since = None;
+            self.chain_over = true;
+            self.screensaver = !self.touched;
         }
     }
 
@@ -1924,6 +2236,7 @@ const fn action_key(action: StockAction) -> Option<KeyCode> {
         StockAction::StepDisplayBrightness(_)
         | StockAction::StepKeyboardBacklight(_)
         | StockAction::ToggleMute
+        | StockAction::ToggleKeyboardBacklight
         | StockAction::StepVolume(_)
         | StockAction::MediaPrevious
         | StockAction::MediaPlayPause
@@ -1995,6 +2308,70 @@ mod tests {
             x,
             y,
         }
+    }
+
+    #[test]
+    fn a_touch_skips_the_intro_without_pressing_anything() {
+        let mut session = session();
+        session.intro = Some(Intro::new(130, 20));
+        let outcome = session
+            .observe_input(input(1, false, vec![contact(1, 10, 10)]))
+            .unwrap();
+        assert!(session.intro.is_none());
+        assert!(outcome.actions.is_empty());
+        assert!(session.input.wait_for_touch_release);
+        session.observe_input(input(2, false, Vec::new())).unwrap();
+        assert!(!session.input.wait_for_touch_release);
+    }
+
+    #[test]
+    fn the_intro_draws_into_a_spare_while_the_primary_buffer_is_in_flight() {
+        let mut session = session();
+        session.spares.push(SpareBuffer {
+            id: 2,
+            frame: RendererFrame::new(session.byte_length).unwrap(),
+            registered: true,
+            in_flight: None,
+        });
+        session.in_flight = Some(InFlightFrame {
+            frame_id: 1,
+            acknowledged: true,
+        });
+        // The stock bar never uses the spare.
+        assert_eq!(session.free_slot(), None);
+        session.intro = Some(Intro::new(130, 20));
+        // Not before a stock frame exists to draw over.
+        assert_eq!(session.free_slot(), None);
+        session.intro_base = vec![0; 130 * 20 * 4];
+        assert_eq!(session.free_slot(), Some(BufferSlot::Spare(0)));
+        session.stop_intro("stopped (test)");
+        assert_eq!(session.free_slot(), None);
+    }
+
+    #[test]
+    fn fn_skips_the_intro() {
+        let mut session = session();
+        session.intro = Some(Intro::new(130, 20));
+        session
+            .observe_input(raw_input(1, true, Vec::new()))
+            .unwrap();
+        assert!(session.intro.is_none());
+    }
+
+    #[test]
+    fn the_intro_ends_by_itself() {
+        let mut session = session();
+        let mut intro = Intro::new(130, 20);
+        intro.draw(&mut vec![0; 130 * 20 * 4], Duration::ZERO);
+        session.intro = Some(intro);
+        session
+            .advance(Duration::from_millis(100), &inert_connection(), None)
+            .unwrap();
+        assert!(session.intro.is_some());
+        session
+            .advance(crate::intro::DURATION, &inert_connection(), None)
+            .unwrap();
+        assert!(session.intro.is_none());
     }
 
     #[test]
@@ -2631,13 +3008,19 @@ mod tests {
         );
     }
 
-    #[test]
-    fn triple_tap_and_hold_fn_requests_the_screensaver_once() {
+    /// Feeds Fn presses (ms, Fn down, touching) and counts test-screen and theme requests,
+    /// polling the hold every 10 ms as the session does.
+    fn debug_requests(debug: bool, presses: &[(u64, bool, bool)]) -> (u8, u8) {
         const MS: u64 = 1_000_000;
-        let requested = |presses: &[(u64, bool, bool)]| {
-            let mut interpreter = new_interpreter();
-            let mut requests = 0;
-            for &(at, fn_pressed, touching) in presses {
+        let mut interpreter = new_interpreter();
+        interpreter.set_debug_gestures(debug);
+        let (mut screens, mut themes) = (0, 0);
+        let end = presses.last().map_or(0, |press| press.0) + 1_000;
+        let mut next = presses.iter().peekable();
+        for ms in (0..=end).step_by(10) {
+            while let Some(&&(at, fn_pressed, touching)) = next.peek()
+                && at <= ms
+            {
                 let contacts = if touching {
                     vec![contact(1, 1_000, 30)]
                 } else {
@@ -2646,48 +3029,80 @@ mod tests {
                 interpreter
                     .ingest(&raw_input(at * MS, fn_pressed, contacts), None)
                     .expect("fn frame");
-                requests += u8::from(interpreter.take_screensaver_request());
+                next.next();
             }
-            requests
-        };
-        let triple = [
+            let now = Duration::from_millis(ms);
+            screens += u8::from(interpreter.take_screensaver_request(now));
+            themes += u8::from(interpreter.take_theme_request());
+        }
+        (screens, themes)
+    }
+
+    #[test]
+    fn triple_tap_and_hold_fn_shows_the_test_screen_with_debug_gestures_only() {
+        // Three presses, the third held.
+        let held = [
             (10, true, false),
             (100, false, false),
             (200, true, false),
             (300, false, false),
             (400, true, false),
+            (1_200, false, false),
         ];
-        assert_eq!(requested(&triple), 1);
-        // More quick taps after the triple don't chain into another request.
-        let mut more = triple.to_vec();
-        more.extend([
-            (500, false, false),
-            (600, true, false),
-            (700, false, false),
-            (800, true, false),
-        ]);
-        assert_eq!(requested(&more), 1);
-        // The second press used the bar (an extras button), or the third came too late.
-        assert_eq!(
-            requested(&[
-                (10, true, false),
-                (100, false, false),
-                (200, true, true),
-                (300, false, false),
-                (400, true, false),
-            ]),
-            0
+        assert_eq!(debug_requests(true, &held), (1, 0));
+        assert_eq!(debug_requests(false, &held), (0, 0));
+        // A quick third tap is no test screen (it may become a quad-tap).
+        let quick = [
+            (10, true, false),
+            (100, false, false),
+            (200, true, false),
+            (300, false, false),
+            (400, true, false),
+            (480, false, false),
+        ];
+        assert_eq!(debug_requests(true, &quick), (0, 0));
+        // The second press used the bar, or the third came too late.
+        let touched = [
+            (10, true, false),
+            (100, false, false),
+            (200, true, true),
+            (300, false, false),
+            (400, true, false),
+            (1_200, false, false),
+        ];
+        assert_eq!(debug_requests(true, &touched), (0, 0));
+        let late = [
+            (10, true, false),
+            (100, false, false),
+            (200, true, false),
+            (300, false, false),
+            (700, true, false),
+            (1_500, false, false),
+        ];
+        assert_eq!(debug_requests(true, &late), (0, 0));
+    }
+
+    #[test]
+    fn quad_tap_fn_asks_for_the_next_theme_with_debug_gestures_only() {
+        let quad = [
+            (10, true, false),
+            (100, false, false),
+            (200, true, false),
+            (300, false, false),
+            (400, true, false),
+            (480, false, false),
+            (560, true, false),
+            (640, false, false),
+        ];
+        assert_eq!(debug_requests(true, &quad), (0, 1));
+        assert_eq!(debug_requests(false, &quad), (0, 0));
+        // Two quad-taps in a row: two themes, no test screen.
+        let mut twice = quad.to_vec();
+        twice.extend(
+            quad.iter()
+                .map(|&(at, down, touching)| (at + 1_000, down, touching)),
         );
-        assert_eq!(
-            requested(&[
-                (10, true, false),
-                (100, false, false),
-                (200, true, false),
-                (300, false, false),
-                (700, true, false),
-            ]),
-            0
-        );
+        assert_eq!(debug_requests(true, &twice), (0, 2));
     }
 
     #[test]
@@ -2871,6 +3286,14 @@ mod tests {
     }
 
     #[test]
+    fn the_keyboard_icon_turns_the_backlight_off_and_back_to_its_level() {
+        assert_eq!(keyboard_toggle(40, None), (0, Some(40)));
+        assert_eq!(keyboard_toggle(0, Some(40)), (40, Some(40)));
+        // Never set above 0 here (say it was off at start): a sensible default.
+        assert_eq!(keyboard_toggle(0, None), (KEYBOARD_ON_DEFAULT, None));
+    }
+
+    #[test]
     fn sliders_set_the_level_under_the_finger_and_the_volume_icon_mutes() {
         let dimensions = DisplayDimensions::new(2_170, 60).unwrap();
         let all = StockCapabilities::DISPLAY_BRIGHTNESS
@@ -2919,6 +3342,21 @@ mod tests {
         assert_eq!(
             at(&mut interpreter, Some(602 + 186)),
             level(SliderKind::Keyboard, 50)
+        );
+        assert_eq!(at(&mut interpreter, None), []);
+        // The keyboard icon turns the backlight off and on (only if released on it); the
+        // brightness icon is just the low end of its slider.
+        assert_eq!(at(&mut interpreter, Some(614)), []);
+        assert_eq!(
+            at(&mut interpreter, None),
+            [StockAction::ToggleKeyboardBacklight]
+        );
+        assert_eq!(at(&mut interpreter, Some(614)), []);
+        assert_eq!(at(&mut interpreter, Some(800)), []);
+        assert_eq!(at(&mut interpreter, None), []);
+        assert_eq!(
+            at(&mut interpreter, Some(200)),
+            level(SliderKind::Brightness, 2)
         );
         assert_eq!(at(&mut interpreter, None), []);
         // Media buttons are still buttons.

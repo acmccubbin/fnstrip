@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Generates src/value_glyphs.rs: alpha masks of the characters the meters print
-("0-9 . % k M G B : ° C"), in two sizes, from Adwaita Sans Medium (SIL OFL 1.1; derived from Inter,
+("0-9 . % k M G B : ° C F"), in two sizes, from Adwaita Sans Medium (SIL OFL 1.1; derived from Inter,
 like the stock labels). Digits get one shared advance so numbers don't jiggle.
 
 Run from the project root: python3 tools/value_glyphs.py > src/value_glyphs.rs
@@ -8,7 +8,7 @@ Run from the project root: python3 tools/value_glyphs.py > src/value_glyphs.rs
 from PIL import Image, ImageDraw, ImageFont
 
 FONT = "/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf"
-CHARS = "0123456789.%kMGB:°C"
+CHARS = "0123456789.%kMGB:°CF"
 SIZES = {"LARGE": 24, "SMALL": 18}  # pixel sizes; cap height ~17 and ~13
 
 

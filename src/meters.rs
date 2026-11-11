@@ -10,6 +10,7 @@
 //! rates are scaled to the peak of the shown history (with a floor so idle noise stays
 //! low), and the scale eases back down when a peak scrolls off.
 
+use crate::theme::FaceTint;
 use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -145,6 +146,10 @@ pub(crate) struct Meter {
     sensor: Option<(PathBuf, f64)>,
     /// Fan: up to two fans (first, second), found at the first sample.
     fans: Vec<Fan>,
+    /// Temperature: print °F instead of °C (`temperature_unit = "f"`).
+    fahrenheit: bool,
+    /// The theme's recolouring of its face.
+    tint: FaceTint,
 }
 
 /// One fan's speed file and its range in rpm.
@@ -193,7 +198,16 @@ impl Meter {
             battery: None,
             sensor: None,
             fans: Vec::new(),
+            fahrenheit: false,
+            tint: FaceTint::None,
         })
+    }
+
+    /// Temperature meters print °F instead of °C.
+    #[must_use]
+    pub(crate) const fn in_fahrenheit(mut self, fahrenheit: bool) -> Self {
+        self.fahrenheit = fahrenheit;
+        self
     }
 
     /// Reads the counters and appends a sample (rates need two reads, so the first read
@@ -270,6 +284,25 @@ impl Meter {
         }
         self.history.push_back(sample);
         self.rescale();
+    }
+
+    /// Made-up hardware, for the documentation's pictures: a battery at `level` on power
+    /// with `hours` to full, a sensor with the default critical limit, and two fans with
+    /// the tested MacBook Pro's ranges.
+    #[cfg(test)]
+    pub(crate) fn pretend_hardware(&mut self, level: f64, hours: f64) {
+        self.battery = Some(Battery {
+            level,
+            powered: true,
+            hours: Some(hours),
+        });
+        self.sensor = Some((PathBuf::new(), DEFAULT_CRITICAL));
+        let fan = |min, max| Fan {
+            input: PathBuf::new(),
+            min,
+            max,
+        };
+        self.fans = vec![fan(2160.0, 5927.0), fan(2000.0, 5489.0)];
     }
 
     fn rescale(&mut self) {
@@ -398,11 +431,18 @@ impl Meter {
         }
     }
 
+    /// Its colours, in the theme's tint.
     fn palette(&self) -> Palette {
-        match self.battery {
+        let Palette(colours) = match self.battery {
             Some(battery) if self.kind == Kind::Battery => battery.palette(),
             _ => self.kind.palette(self.vpn),
-        }
+        };
+        Palette(colours.map(|colour| self.tint.apply(colour)))
+    }
+
+    /// Colours it in the theme's tint from the next draw.
+    pub(crate) const fn set_tint(&mut self, tint: FaceTint) {
+        self.tint = tint;
     }
 
     /// The value right of the icon: one line for CPU and memory (percent of the whole), two
@@ -440,7 +480,8 @@ impl Meter {
                     .sensor
                     .as_ref()
                     .map_or(DEFAULT_CRITICAL, |sensor| sensor.1);
-                vec![(format_celsius((mean(0) + mean(1)) * critical), WHITE)]
+                let celsius = (mean(0) + mean(1)) * critical;
+                vec![(format_temperature(celsius, self.fahrenheit), WHITE)]
             }
             Kind::Battery => {
                 let Palette([_, fill, _]) = self.palette();
@@ -560,10 +601,14 @@ fn format_rate(bytes: f64) -> String {
     }
 }
 
-/// Whole degrees: "54°C".
+/// Whole degrees: "54°C", or "130°F".
 #[allow(clippy::cast_possible_truncation)]
-fn format_celsius(celsius: f64) -> String {
-    format!("{}°C", celsius.round() as i32)
+fn format_temperature(celsius: f64, fahrenheit: bool) -> String {
+    if fahrenheit {
+        format!("{}°F", celsius.mul_add(1.8, 32.0).round() as i32)
+    } else {
+        format!("{}°C", celsius.round() as i32)
+    }
 }
 
 /// Whole rpm: "2153".
@@ -885,7 +930,9 @@ mod tests {
         }
         assert_eq!(format_percent(0.423), "42%");
         assert_eq!(format_percent(1.2), "100%");
-        assert_eq!(format_celsius(54.4), "54°C");
+        assert_eq!(format_temperature(54.4, false), "54°C");
+        assert_eq!(format_temperature(54.4, true), "130°F");
+        assert_eq!(format_temperature(100.0, true), "212°F");
         assert_eq!(format_rpm(2153.4), "2153");
         assert_eq!(format_hours(0.12), "0:07");
         assert_eq!(format_hours(2.75), "2:45");
@@ -976,7 +1023,7 @@ mod tests {
     #[test]
     fn every_printed_character_has_a_glyph() {
         for glyphs in [&value_glyphs::LARGE, &value_glyphs::SMALL] {
-            for char in "0123456789.%kMGB:°C".chars() {
+            for char in "0123456789.%kMGB:°CF".chars() {
                 assert!(glyphs.iter().any(|(glyph, _)| *glyph == char), "{char}");
             }
         }

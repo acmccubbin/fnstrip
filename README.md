@@ -14,13 +14,15 @@ v0.1.12. Reports from other models are welcome.
 
 - **Controls row:** Esc, sliders for display brightness, keyboard backlight and volume that
   show the current level and follow your finger, and media buttons. Tap the speaker icon to
-  mute. Volume and media need a desktop provider (below).
+  mute, or the keyboard icon to turn the backlight off (and back on to its level). Volume and
+  media need a desktop provider (below).
 - **F-keys:** Esc and F1-F12 while Fn is held (or swap the rows with `default_row`).
 - **Extras row:** double-tap Fn; it stays until the next Fn press. Esc, your own toggle
   buttons, and live CPU, memory, disk and network graphs, CPU temperature, fan speeds
   and a battery gauge (with a bolt while on power, and the time to empty or full). A lit mic button shows a spectrum,
   a lit camera button its picture, and a lit VPN button its traffic.
-- **Test screen:** triple-tap Fn and hold, for animations with frame-rate stats.
+- **Debug gestures** (`debug_gestures = "on"`; off by default): triple-tap Fn and hold for the
+  test screen (animations with frame-rate stats), quad-tap Fn for the next theme (until restart).
 
 ## Requirements
 
@@ -72,9 +74,27 @@ Copy `config/default.toml` to `~/.config/fnstrip/config.toml`; its comments desc
 setting. Restart `t1-touchbar.service` to apply. A broken config falls back to the built-in
 default, and the error goes to `journalctl --user -u t1-touchbar.service`.
 
-Button commands run with `sh -c` as you, so treat this file like a shell script.
+Temperatures show in °C; `temperature_unit = "f"` shows °F.
+
+Themes: `theme = "mono"`, `"pastel"` or `"rainbow"` (or the default) colours the whole bar,
+meters and spectra included, and a `[colors]` section changes any single colour on top, as
+`"#rrggbb"`.
+
+![The four themes, controls and extras rows](docs/media/themes.png)
+
+Button commands run with `sh -c` as you, so treat this file like a shell script: whoever can
+edit it can run commands as you. Read any config you didn't write (including one you
+downloaded or edited from the project page) before you use it.
 
 ## Good to know
+
+- **What it runs and reads:** fnstrip is an ordinary user process (no root, no setuid). Besides
+  your config's commands, it starts only `busctl` (is media playing?), `pw-record` (the mic
+  spectrum while the mic button is lit; the speakers' spectrum while media plays and the
+  controls row shows), `ffmpeg` (the camera, while its button is lit), `brightnessctl`,
+  `systemctl` and `date`, each without a shell. Sound and pictures are analysed in memory
+  and never saved. Touch ID stays entirely T1Bridge's: fnstrip only reads its state file to
+  draw the prompt.
 
 - **Full frames:** normal bar updates are always sent as whole frames, at most 40 a second.
   On the tested machine, partial updates of every shape tried made the panel stop answering

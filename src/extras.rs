@@ -9,7 +9,8 @@
 //! [`LiveFaces`]: while the row shows, a lit camera button shows the camera picture (the
 //! webcam service's preview file), a lit mic button a spectrum of the microphone, a lit
 //! VPN button a graph of its traffic, and the meters (CPU, memory, disk, network, battery)
-//! their graphs, under their icons. The battery button is lit while on external power
+//! their graphs, under their icons. The meters keep sampling while the row is hidden (only
+//! one plate's width of history, in memory), so it opens on full graphs. The battery button is lit while on external power
 //! (unless it has its own status command).
 
 use std::process::{Command, Stdio};
@@ -23,6 +24,7 @@ use crate::framebuffer::Rectangle;
 use crate::live::{AudioFeed, AudioSource, CameraPreview, Spectrum};
 use crate::meters::{self, Meter};
 use crate::stock_slice::ExtraIcon;
+use crate::theme::{FaceTint, Theme};
 
 const VISIBLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// A live feed whose process died (e.g. the webcam loopback had no picture yet) is
@@ -192,16 +194,23 @@ fn run_command(command: &str) {
 }
 
 /// Feeds behind the live faces of lit camera, mic and VPN buttons and of the meters.
-/// Started when the extras row shows (with such a button lit), stopped when it hides or
-/// the button goes dark.
+/// The camera and mic start when the extras row shows (with their button lit) and stop
+/// when it hides or the button goes dark. The meters (and a lit VPN's graph) sample all
+/// the time, so their graphs have history the moment the row shows.
 #[derive(Default)]
 pub(crate) struct LiveFaces {
     camera: Option<(u8, CameraPreview)>,
     mic: Option<Slot<(AudioFeed, Spectrum)>>,
+    /// The speakers' spectrum on the play/pause button while media plays.
+    speakers: Option<Slot<(AudioFeed, Spectrum)>>,
     meters: Vec<(u8, Meter)>,
     meters_sampled: Option<Instant>,
     /// A meter took a sample since the last [`LiveFaces::take_fresh`].
     fresh: bool,
+    /// Temperatures in °F (`temperature_unit = "f"`).
+    fahrenheit: bool,
+    /// Colours the faces follow.
+    theme: Theme,
 }
 
 /// One button's feed; `None` after a failed start, retried after [`FEED_RETRY`].
@@ -241,11 +250,14 @@ impl LiveFaces {
             || AudioFeed::start(AudioSource::Input).map(|feed| (feed, Spectrum::new(bars))),
             |(feed, _)| feed.ended(),
         );
-        self.sync_meters(visible, buttons, on, plate.0);
-        let mut live = self
-            .meters
-            .iter()
-            .fold(0, |bits, (index, _)| bits | (1 << index));
+        self.sync_meters(buttons, on, plate.0);
+        let mut live = if visible {
+            self.meters
+                .iter()
+                .fold(0, |bits, (index, _)| bits | (1 << index))
+        } else {
+            0
+        };
         if let Some((index, preview)) = &self.camera
             && !preview.frame.is_empty()
         {
@@ -263,12 +275,11 @@ impl LiveFaces {
     }
 
     /// Keeps a meter for every meter button and the lit VPN button, and samples them all
-    /// every [`METER_INTERVAL`].
-    fn sync_meters(&mut self, visible: bool, buttons: &[ExtraConfig], on: u16, width: usize) {
+    /// every [`METER_INTERVAL`], whether or not the extras row shows: a double-tap on Fn
+    /// then opens on graphs that already hold their history.
+    fn sync_meters(&mut self, buttons: &[ExtraConfig], on: u16, width: usize) {
         let wanted = (0_u8..).zip(buttons).filter(|&(index, button)| {
-            visible
-                && (button.icon.is_meter()
-                    || (button.icon == ExtraIcon::Vpn && on & (1 << index) != 0))
+            button.icon.is_meter() || (button.icon == ExtraIcon::Vpn && on & (1 << index) != 0)
         });
         if !wanted
             .clone()
@@ -282,8 +293,11 @@ impl LiveFaces {
                         .iter()
                         .position(|(old_index, _)| *old_index == index)
                         .map(|position| old.swap_remove(position).1);
-                    kept.or_else(|| Meter::new(button.icon, button.interface.as_deref(), width))
-                        .map(|meter| (index, meter))
+                    kept.or_else(|| {
+                        Meter::new(button.icon, button.interface.as_deref(), width)
+                            .map(|meter| meter.in_fahrenheit(self.fahrenheit))
+                    })
+                    .map(|meter| (index, meter))
                 })
                 .collect();
             self.meters_sampled = None;
@@ -302,6 +316,59 @@ impl LiveFaces {
         self.fresh = true;
     }
 
+    /// Starts or stops the speakers' spectrum for the play/pause button (`playing`: media
+    /// plays and the controls row shows). True while it has a feed to draw.
+    pub(crate) fn sync_speakers(&mut self, playing: bool, width: usize) -> bool {
+        let bars = width.saturating_sub(2 * MIC_INSET) / MIC_BAR_PITCH;
+        keep(
+            &mut self.speakers,
+            playing.then_some(0),
+            || AudioFeed::start(AudioSource::Speakers).map(|feed| (feed, Spectrum::new(bars))),
+            |(feed, _)| feed.ended(),
+        );
+        matches!(self.speakers, Some(Slot { feed: Some(_), .. }))
+    }
+
+    /// Draws the speakers' spectrum into the play/pause plate of an XRGB8888 frame.
+    pub(crate) fn draw_speakers(
+        &mut self,
+        pixels: &mut [u8],
+        stride: usize,
+        bounds: Rectangle,
+        bar_width: u32,
+    ) {
+        let tint = self.theme.face_tint(bounds.x, bar_width);
+        let Some(Slot {
+            feed: Some((feed, spectrum)),
+            ..
+        }) = &mut self.speakers
+        else {
+            return;
+        };
+        let (left, top) = (bounds.x as usize, bounds.y as usize);
+        let (width, height) = (bounds.width as usize, bounds.height as usize);
+        let rows = pixels
+            .chunks_exact_mut(stride)
+            .skip(top)
+            .take(height)
+            .map(|row| &mut row[left * 4..(left + width) * 4]);
+        if let Ok(samples) = feed.samples.lock() {
+            spectrum.analyse(&samples);
+        }
+        spectrum.settle();
+        draw_mic_spectrum(rows, spectrum, width, height, tint);
+    }
+
+    /// Colours the faces in this theme's tint.
+    pub(crate) const fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+    }
+
+    /// Prints temperatures in °F instead of °C, from the next meters made (set at start).
+    pub(crate) const fn set_fahrenheit(&mut self, fahrenheit: bool) {
+        self.fahrenheit = fahrenheit;
+    }
+
     /// The battery meter's charge in quarters, once it has a reading.
     pub(crate) fn battery_bars(&self) -> Option<u8> {
         self.meters
@@ -318,11 +385,22 @@ impl LiveFaces {
 
     /// True while a face changes continuously (camera picture, mic spectrum).
     pub(crate) const fn animating(&self) -> bool {
-        self.camera.is_some() || matches!(self.mic, Some(Slot { feed: Some(_), .. }))
+        self.camera.is_some()
+            || matches!(self.mic, Some(Slot { feed: Some(_), .. }))
+            || matches!(self.speakers, Some(Slot { feed: Some(_), .. }))
     }
 
-    /// Draws button `index`'s live face into its plate rectangle of an XRGB8888 frame.
-    pub(crate) fn draw(&mut self, pixels: &mut [u8], stride: usize, index: u8, bounds: Rectangle) {
+    /// Draws button `index`'s live face into its plate rectangle of an XRGB8888 frame
+    /// `bar_width` pixels wide, in the theme's tint.
+    pub(crate) fn draw(
+        &mut self,
+        pixels: &mut [u8],
+        stride: usize,
+        index: u8,
+        bounds: Rectangle,
+        bar_width: u32,
+    ) {
+        let tint = self.theme.face_tint(bounds.x, bar_width);
         let (left, top) = (bounds.x as usize, bounds.y as usize);
         let (width, height) = (bounds.width as usize, bounds.height as usize);
         let rows = pixels
@@ -339,6 +417,12 @@ impl LiveFaces {
             }
             for (row, source) in rows.zip(frame.chunks_exact(width * 4)) {
                 row.copy_from_slice(source);
+                // A picture keeps its colours, except grey for mono.
+                if tint == FaceTint::Grey {
+                    for pixel in row.as_chunks_mut::<4>().0 {
+                        *pixel = tint.apply(*pixel);
+                    }
+                }
             }
         } else if let Some(Slot {
             index: mic_index,
@@ -351,8 +435,9 @@ impl LiveFaces {
                 spectrum.analyse(&samples);
             }
             spectrum.settle();
-            draw_mic_spectrum(rows, spectrum, width, height);
-        } else if let Some((_, meter)) = self.meters.iter().find(|(i, _)| *i == index) {
+            draw_mic_spectrum(rows, spectrum, width, height, tint);
+        } else if let Some((_, meter)) = self.meters.iter_mut().find(|(i, _)| *i == index) {
+            meter.set_tint(tint);
             meter.draw(rows, width, height);
         }
     }
@@ -396,7 +481,10 @@ pub(crate) fn draw_mic_spectrum<'a>(
     spectrum: &Spectrum,
     width: usize,
     height: usize,
+    tint: FaceTint,
 ) {
+    let background = tint.apply(MIC_BACKGROUND);
+    let peak_colour = tint.apply(MIC_PEAK);
     let bars = spectrum.levels.len();
     let first = (width - bars * MIC_BAR_PITCH) / 2 + (MIC_BAR_PITCH - MIC_BAR_WIDTH) / 2;
     let full = height as f32;
@@ -406,19 +494,19 @@ pub(crate) fn draw_mic_spectrum<'a>(
         let bar_colour = std::array::from_fn::<f32, 3, _>(|channel| {
             MIC_BAR_BOTTOM[channel] + (MIC_BAR_TOP[channel] - MIC_BAR_BOTTOM[channel]) * shade
         });
-        let bar_colour = [
+        let bar_colour = tint.apply([
             bar_colour[0] as u8,
             bar_colour[1] as u8,
             bar_colour[2] as u8,
             0,
-        ];
+        ]);
         for pixel in row.as_chunks_mut::<4>().0 {
-            *pixel = MIC_BACKGROUND;
+            *pixel = background;
         }
         for (bar, (&level, &peak)) in spectrum.levels.iter().zip(&spectrum.peaks).enumerate() {
             let peak_row = (peak * full).round();
             let colour = if (from_bottom - peak_row).abs() < 1.0 && peak > 0.02 {
-                MIC_PEAK
+                peak_colour
             } else if from_bottom <= level * full {
                 bar_colour
             } else {

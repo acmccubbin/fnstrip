@@ -1,7 +1,7 @@
 //! User configuration: `$XDG_CONFIG_HOME/fnstrip/config.toml` (else `~/.config/...`).
 //!
 //! The format is a strict TOML subset, parsed here so the crate stays std-only:
-//! `# comments`, `[[extras]]` table-array headers, and `key = "basic"` or `key = 'literal'`
+//! `# comments`, `[[extras]]` table-array headers, a `[colors]` table, and `key = "basic"` or `key = 'literal'`
 //! string values (basic strings take `\"`, `\\`, `\n`, `\t`). Anything else is an error
 //! with a line number. A missing or broken file falls back to the built-in default
 //! (`config/default.toml`), so a typo never costs the bar.
@@ -13,15 +13,26 @@ use std::io;
 use std::path::PathBuf;
 
 use crate::stock_slice::{ExtraIcon, MAX_EXTRAS};
+use crate::theme::Theme;
 
 const DEFAULT_CONFIG: &str = include_str!("../config/default.toml");
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(clippy::struct_excessive_bools, reason = "independent on/off settings")]
 pub struct Config {
     /// Esc + F1–F12 show with Fn up, instead of the controls (`default_row = "function"`).
     pub function_row_first: bool,
+    /// The light show when the renderer starts (`startup_animation = "on"`, the default).
+    pub startup_animation: bool,
     /// Buttons of the extras row (double-tap Fn), left to right.
     pub extras: Vec<ExtraConfig>,
+    /// Colours: `theme = "mono"`, then any `[colors]` overrides.
+    pub theme: Theme,
+    /// The temperature meter in °F (`temperature_unit = "f"`); °C by default.
+    pub fahrenheit: bool,
+    /// Fn triple-tap-and-hold for the test screen and quad-tap for the next theme
+    /// (`debug_gestures = "on"`); off by default.
+    pub debug_gestures: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,6 +60,19 @@ impl fmt::Display for ConfigError {
 }
 
 impl std::error::Error for ConfigError {}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            function_row_first: false,
+            startup_animation: true,
+            extras: Vec::new(),
+            theme: Theme::DEFAULT,
+            fahrenheit: false,
+            debug_gestures: false,
+        }
+    }
+}
 
 impl Config {
     /// The user's config, or the built-in default if it's missing or invalid (logged).
@@ -90,6 +114,10 @@ impl Config {
     pub fn parse(text: &str) -> Result<Self, ConfigError> {
         let mut config = Self::default();
         let mut current: Option<(usize, PartialExtra)> = None;
+        // Inside `[colors]`; its entries apply over the named theme once it is known.
+        let mut in_colors = false;
+        let mut colors: Vec<(usize, String, String)> = Vec::new();
+        let mut theme_name: Option<String> = None;
         for (index, raw) in text.lines().enumerate() {
             let line = index + 1;
             let error = |message: &str| ConfigError {
@@ -104,8 +132,12 @@ impl Config {
                 if let Some((start, extra)) = current.take() {
                     config.push_extra(start, extra)?;
                 }
+                in_colors = content == "[colors]";
+                if in_colors {
+                    continue;
+                }
                 if content != "[[extras]]" {
-                    return Err(error("unknown section (only [[extras]] is supported)"));
+                    return Err(error("unknown section (only [colors] and [[extras]])"));
                 }
                 current = Some((line, PartialExtra::default()));
                 continue;
@@ -115,15 +147,14 @@ impl Config {
                 .ok_or_else(|| error("expected key = \"value\""))?;
             let key = key.trim();
             let value = parse_string(value.trim()).map_err(|message| error(&message))?;
+            if in_colors {
+                colors.push((line, key.to_owned(), value));
+                continue;
+            }
             let Some((_, extra)) = current.as_mut() else {
-                if key != "default_row" {
-                    return Err(error("key outside an [[extras]] entry"));
-                }
-                config.function_row_first = match value.as_str() {
-                    "controls" => false,
-                    "function" => true,
-                    _ => return Err(error("default_row must be \"controls\" or \"function\"")),
-                };
+                config
+                    .set_top_level(key, value, &mut theme_name)
+                    .map_err(|message| error(&message))?;
                 continue;
             };
             let slot = match key {
@@ -140,7 +171,67 @@ impl Config {
         if let Some((start, extra)) = current {
             config.push_extra(start, extra)?;
         }
+        if let Some(name) = theme_name {
+            config.theme = Theme::named(&name).unwrap_or_default();
+        }
+        for (line, key, value) in colors {
+            config
+                .theme
+                .set(&key, &value)
+                .map_err(|message| ConfigError { line, message })?;
+        }
         Ok(config)
+    }
+
+    /// A setting above the first `[[extras]]` (the theme is applied after the whole file,
+    /// under any `[colors]`).
+    fn set_top_level(
+        &mut self,
+        key: &str,
+        value: String,
+        theme_name: &mut Option<String>,
+    ) -> Result<(), String> {
+        match key {
+            "default_row" => {
+                self.function_row_first = match value.as_str() {
+                    "controls" => false,
+                    "function" => true,
+                    _ => return Err("default_row must be \"controls\" or \"function\"".into()),
+                };
+            }
+            "startup_animation" => {
+                self.startup_animation = match value.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err("startup_animation must be \"on\" or \"off\"".into()),
+                };
+            }
+            "debug_gestures" => {
+                self.debug_gestures = match value.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err("debug_gestures must be \"on\" or \"off\"".into()),
+                };
+            }
+            "temperature_unit" => {
+                self.fahrenheit = match value.to_ascii_lowercase().as_str() {
+                    "c" | "celsius" => false,
+                    "f" | "fahrenheit" => true,
+                    _ => return Err("temperature_unit must be \"c\" or \"f\"".into()),
+                };
+            }
+            "theme" => {
+                if Theme::named(&value).is_none() {
+                    return Err(format!(
+                        "unknown theme `{value}` (known: {})",
+                        Theme::NAMES.join(", ")
+                    ));
+                }
+                *theme_name = Some(value);
+            }
+            _ => return Err("key outside an [[extras]] entry".into()),
+        }
+        Ok(())
     }
 
     fn push_extra(&mut self, line: usize, extra: PartialExtra) -> Result<(), ConfigError> {
@@ -299,6 +390,74 @@ interface = 'wlan0'",
         assert_eq!(config.extras[0].icon, ExtraIcon::Cpu);
         assert_eq!(config.extras[0].command, "");
         assert_eq!(config.extras[1].interface.as_deref(), Some("wlan0"));
+    }
+
+    #[test]
+    fn debug_gestures_are_off_unless_turned_on() {
+        assert!(!Config::parse("").unwrap().debug_gestures);
+        assert!(
+            Config::parse("debug_gestures = \"on\"")
+                .unwrap()
+                .debug_gestures
+        );
+        assert!(Config::parse("debug_gestures = \"yes\"").is_err());
+    }
+
+    #[test]
+    fn temperature_is_celsius_unless_set_to_fahrenheit() {
+        assert!(!Config::parse("").unwrap().fahrenheit);
+        assert!(
+            Config::parse("temperature_unit = \"f\"")
+                .unwrap()
+                .fahrenheit
+        );
+        assert!(
+            Config::parse("temperature_unit = \"Fahrenheit\"")
+                .unwrap()
+                .fahrenheit
+        );
+        assert!(
+            !Config::parse("temperature_unit = \"c\"")
+                .unwrap()
+                .fahrenheit
+        );
+        assert!(Config::parse("temperature_unit = \"k\"").is_err());
+    }
+
+    #[test]
+    fn theme_and_colors_apply_in_that_order() {
+        let config = Config::parse(
+            "theme = \"mono\"\n[colors]\nlabel = \"#fffff0\"\n\
+             [[extras]]\nicon = \"cpu\"\n",
+        )
+        .unwrap();
+        let mono = Theme::named("mono").unwrap();
+        assert_eq!(config.theme.plate, mono.plate);
+        assert_eq!(config.theme.label.blue, 0xf0);
+        assert_eq!(config.extras.len(), 1);
+        assert_eq!(Config::parse("").unwrap().theme, Theme::DEFAULT);
+        let error = Config::parse("theme = \"neon\"").unwrap_err();
+        assert!(error.message.contains("unknown theme"), "{error}");
+        let error = Config::parse("[colors]\nplate = \"grey\"").unwrap_err();
+        assert_eq!(error.line, 2);
+    }
+
+    #[test]
+    fn startup_animation_is_on_unless_turned_off() {
+        assert!(Config::parse("").unwrap().startup_animation);
+        assert!(Config::default_config().startup_animation);
+        assert!(
+            Config::parse("startup_animation = 'on'")
+                .unwrap()
+                .startup_animation
+        );
+        assert!(
+            !Config::parse("startup_animation = 'off'")
+                .unwrap()
+                .startup_animation
+        );
+        assert!(Config::parse("startup_animation = 'loud'").is_err());
+        assert!(Config::parse("[[extras]]\nstartup_animation = 'off'").is_err());
     }
 
     #[test]

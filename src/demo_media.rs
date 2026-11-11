@@ -14,10 +14,12 @@ use std::time::Duration;
 
 use crate::extras::draw_mic_spectrum;
 use crate::framebuffer::Xrgb8888Frame;
+use crate::intro::{self, Intro};
 use crate::live::Spectrum;
 use crate::meters::Meter;
 use crate::screensaver::Screensaver;
 use crate::stock_slice::{ExtraIcon, Layer, StockBar, StockCapabilities, StockLevels};
+use crate::theme::{FaceTint, Theme};
 
 const WIDTH: u32 = 2_170;
 const HEIGHT: u32 = 60;
@@ -134,6 +136,14 @@ fn sample(icon: ExtraIcon, step: u32) -> [f64; 2] {
     match icon {
         ExtraIcon::Cpu => [0.12 + 0.3 * wave(9.0, 0.0), 0.04 + 0.1 * wave(5.0, 1.0)],
         ExtraIcon::Memory => [0.38 + 0.03 * wave(40.0, 0.0), 0.27],
+        // Fractions of the 100 °C limit, the part above 80 °C second: 50 to 64 °C.
+        ExtraIcon::Temperature => [0.5 + 0.14 * wave(9.0, 0.0).powi(2), 0.0],
+        // rpm, left and right fan.
+        ExtraIcon::Fan => [
+            2_160.0 + 900.0 * wave(23.0, 4.0).powi(2),
+            2_000.0 + 700.0 * wave(23.0, 3.6).powi(2),
+        ],
+        ExtraIcon::Battery => [BATTERY_LEVEL, 0.0],
         ExtraIcon::Disk => [
             2.0e6 * wave(13.0, 2.0).powi(6) * 30.0,
             1.0e6 * wave(7.0, 0.5).powi(8) * 20.0,
@@ -159,32 +169,70 @@ fn plate(bar: StockBar, pixels: &mut [u8], index: u8) -> Vec<&mut [u8]> {
         .collect()
 }
 
-/// The extras row, everything live.
-fn render_extras() {
-    const ICONS: [ExtraIcon; 7] = [
-        ExtraIcon::Camera,
-        ExtraIcon::Mic,
-        ExtraIcon::Vpn,
-        ExtraIcon::Cpu,
-        ExtraIcon::Memory,
-        ExtraIcon::Disk,
-        ExtraIcon::Network,
-    ];
-    let bar = bar().with_extras(&ICONS);
-    let mut meters: Vec<(u8, Meter)> = (2_u8..)
-        .zip(&ICONS[2..])
+/// The pretend battery: charge, and hours until full (on power).
+const BATTERY_LEVEL: f64 = 0.68;
+const BATTERY_HOURS: f64 = 0.75;
+
+/// The extras row, all ten buttons live.
+const EXTRAS: [ExtraIcon; 10] = [
+    ExtraIcon::Camera,
+    ExtraIcon::Mic,
+    ExtraIcon::Vpn,
+    ExtraIcon::Cpu,
+    ExtraIcon::Temperature,
+    ExtraIcon::Fan,
+    ExtraIcon::Memory,
+    ExtraIcon::Disk,
+    ExtraIcon::Network,
+    ExtraIcon::Battery,
+];
+
+/// The extras row's meters (the VPN and everything right of it), each with a full graph
+/// of sample data.
+fn demo_meters() -> Vec<(u8, Meter)> {
+    (2_u8..)
+        .zip(&EXTRAS[2..])
         .map(|(index, icon)| {
             let mut meter = Meter::new(*icon, None, 182).unwrap();
+            meter.pretend_hardware(BATTERY_LEVEL, BATTERY_HOURS);
             for step in 0..91 {
                 meter.push_sample(sample(*icon, step));
             }
             (index, meter)
         })
-        .collect();
+        .collect()
+}
+
+/// A voice-like mic spectrum at time `t` (in frames).
+fn demo_spectrum(spectrum: &mut Spectrum, t: f64) {
+    for (bar_index, (level, peak)) in spectrum
+        .levels
+        .iter_mut()
+        .zip(&mut spectrum.peaks)
+        .enumerate()
+    {
+        let b = bar_index as f64;
+        let voice = (-(b - 6.0).powi(2) / 60.0).exp();
+        let wobble = ((t / 2.5 + b / 2.0).sin() + (t / 4.0 - b / 3.0).sin() + 2.0) / 4.0;
+        *level = (voice * wobble * 0.95) as f32;
+        *peak = (*peak - 0.01).max(*level);
+    }
+}
+
+fn render_extras() {
+    const ICONS: [ExtraIcon; 10] = EXTRAS;
+    let bar = bar().with_extras(&ICONS);
+    let mut meters = demo_meters();
     let mut spectrum = Spectrum::new(24);
+    let battery_bars = meters
+        .iter()
+        .find_map(|(_, meter)| meter.battery_bars())
+        .unwrap();
+    // Camera, mic and VPN on; the battery lit (on power).
     let shown = StockLevels {
-        extras_on: 0b111,
-        extras_live: 0b111_1111,
+        extras_on: 0b10_0000_0111,
+        extras_live: 0b11_1111_1111,
+        battery_bars,
         ..StockLevels::default()
     };
     let mut out = File::create(output().join("extras.raw")).unwrap();
@@ -208,20 +256,9 @@ fn render_extras() {
                 ];
             }
         }
-        for (bar_index, (level, peak)) in spectrum
-            .levels
-            .iter_mut()
-            .zip(&mut spectrum.peaks)
-            .enumerate()
-        {
-            let b = bar_index as f64;
-            let voice = (-(b - 6.0).powi(2) / 60.0).exp();
-            let wobble = ((t / 2.5 + b / 2.0).sin() + (t / 4.0 - b / 3.0).sin() + 2.0) / 4.0;
-            *level = (voice * wobble * 0.95) as f32;
-            *peak = (*peak - 0.01).max(*level);
-        }
+        demo_spectrum(&mut spectrum, t);
         let lines = plate(bar, &mut pixels, 1);
-        draw_mic_spectrum(lines.into_iter(), &spectrum, 182, 60);
+        draw_mic_spectrum(lines.into_iter(), &spectrum, 182, 60, FaceTint::None);
         if frame % 4 == 0 {
             for (index, meter) in &mut meters {
                 meter.push_sample(sample(ICONS[usize::from(*index)], 91 + frame / 4));
@@ -233,6 +270,111 @@ fn render_extras() {
         let mut row = Xrgb8888Frame::new(WIDTH, HEIGHT, WIDTH * 4, &mut pixels).unwrap();
         bar.render_live_extras(&mut row, shown, None).unwrap();
         out.write_all(&pixels).unwrap();
+    }
+}
+
+/// Plain rows for the web page's icon sprites (`tools/make_demo_media.py` cuts the icons out):
+/// empty sliders, muted, the extras row unlit and with its toggles and battery lit.
+fn render_sprite_rows() {
+    let mut out = File::create(output().join("sprites.raw")).unwrap();
+    // No keyboard level: at 0 its icon would be drawn dimmed (backlight off).
+    let empty = StockLevels {
+        keyboard_backlight: None,
+        ..levels(0, 0, 0, false)
+    };
+    out.write_all(&draw_row(Layer::Controls, empty)).unwrap();
+    let muted = StockLevels {
+        muted: true,
+        ..empty
+    };
+    out.write_all(&draw_row(Layer::Controls, muted)).unwrap();
+    out.write_all(&draw_row(Layer::Function, empty)).unwrap();
+    let bar = bar().with_extras(&EXTRAS);
+    for (extras_on, battery_bars) in [(0, 4), (0b10_0000_0111, 4)] {
+        let mut pixels = vec![0; FRAME_BYTES];
+        let mut row = Xrgb8888Frame::new(WIDTH, HEIGHT, WIDTH * 4, &mut pixels).unwrap();
+        let shown = StockLevels {
+            extras_on,
+            battery_bars,
+            ..StockLevels::default()
+        };
+        bar.render_pressed(&mut row, Layer::Extras, shown, None)
+            .unwrap();
+        out.write_all(&pixels).unwrap();
+    }
+}
+
+/// Every built-in theme: its controls row (media playing, so play/pause is lit), then its
+/// extras row (mic and VPN on, with the meters and the mic spectrum live, in the theme's
+/// tint), two frames per theme in `Theme::NAMES` order.
+fn render_themes(levels: StockLevels) {
+    let mut out = File::create(output().join("themes.raw")).unwrap();
+    let mut meters = demo_meters();
+    let battery_bars = meters
+        .iter()
+        .find_map(|(_, meter)| meter.battery_bars())
+        .unwrap();
+    let mut spectrum = Spectrum::new(24);
+    for step in 0..40 {
+        demo_spectrum(&mut spectrum, f64::from(step));
+    }
+    for name in Theme::NAMES {
+        let theme = Theme::named(name).unwrap();
+        let controls = bar().with_theme(theme);
+        let mut pixels = vec![0; FRAME_BYTES];
+        let mut frame = Xrgb8888Frame::new(WIDTH, HEIGHT, WIDTH * 4, &mut pixels).unwrap();
+        let playing = StockLevels {
+            playing: true,
+            ..levels
+        };
+        controls
+            .render_pressed(&mut frame, Layer::Controls, playing, None)
+            .unwrap();
+        out.write_all(&pixels).unwrap();
+
+        let extras = controls.with_extras(&EXTRAS);
+        // Mic, VPN and the battery (on power) lit; every face but the camera's live.
+        let shown = StockLevels {
+            extras_on: 0b10_0000_0110,
+            extras_live: 0b11_1111_1110,
+            battery_bars,
+            ..levels
+        };
+        let mut pixels = vec![0; FRAME_BYTES];
+        let mut frame = Xrgb8888Frame::new(WIDTH, HEIGHT, WIDTH * 4, &mut pixels).unwrap();
+        extras
+            .render_pressed(&mut frame, Layer::Extras, shown, None)
+            .unwrap();
+        let tint = |index: u8| theme.face_tint(extras.extra_bounds(index).unwrap().x, WIDTH);
+        draw_mic_spectrum(
+            plate(extras, &mut pixels, 1).into_iter(),
+            &spectrum,
+            182,
+            60,
+            tint(1),
+        );
+        for (index, meter) in &mut meters {
+            meter.set_tint(tint(*index));
+            meter.draw(plate(extras, &mut pixels, *index).into_iter(), 182, 60);
+        }
+        let mut frame = Xrgb8888Frame::new(WIDTH, HEIGHT, WIDTH * 4, &mut pixels).unwrap();
+        extras.render_live_extras(&mut frame, shown, None).unwrap();
+        out.write_all(&pixels).unwrap();
+    }
+}
+
+/// The startup animation over the controls row, at 30 fps, then a second of the bar.
+fn render_intro(levels: StockLevels) {
+    let row = draw_row(Layer::Controls, levels);
+    let intro = Intro::new(WIDTH, HEIGHT);
+    let mut out = File::create(output().join("intro.raw")).unwrap();
+    let step = Duration::from_millis(33);
+    let mut elapsed = Duration::ZERO;
+    while elapsed <= intro::DURATION + Duration::from_secs(1) {
+        let mut pixels = row.clone();
+        intro.draw_at(&mut pixels, elapsed);
+        out.write_all(&pixels).unwrap();
+        elapsed += step;
     }
 }
 
@@ -274,6 +416,9 @@ fn render_demo_frames() {
         draw_row(Layer::Function, levels),
     )
     .unwrap();
+    render_intro(levels);
+    render_themes(levels);
+    render_sprite_rows();
     render_sliders();
     render_extras();
     render_test_screen();
