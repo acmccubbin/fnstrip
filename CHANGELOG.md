@@ -11,12 +11,40 @@ notes here say so.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-11
+
 ### Added
 
 - `fnstrip --version` (and `--help`); the version is also logged when it starts.
 - Project page builder: what each toggle runs (ready-made commands or your own), the network
   interface for the VPN and network meters, colour pickers for `[colors]`, and one-click
   starting layouts (Default, Simple, All meters).
+- Project page: Install, Try the bar and GitHub buttons up top, the release shown, a "What it
+  does" summary before the recordings, the recordings as small looping videos (about 1.8 MB
+  instead of 4.5 MB of GIFs, loaded only when scrolled to), a preview card and icon for shared
+  links, a three-step builder intro, a check for an existing desktop provider in the install
+  steps, and a reference that folds on phones.
+- Builder: a note that every change goes live on the bar at the top, "Try it on the bar"
+  buttons that jump back up with your row showing, and a warning before leaving the page
+  with a config you haven't copied or downloaded.
+- Project page: floating arrows, top right, to jump to the top or bottom of the page (up only
+  at the bottom, none at the top).
+
+### Changed
+
+- Test screen (debug gestures): seven scenes, the four animations, mic, speakers and the
+  camera across the whole bar. The button scenes, the single-plate camera and the automatic
+  sweep ("A") are gone (the module docs say what they did, for tinkerers). With no signal
+  the mic, speaker and camera scenes say so in the middle of the bar ("MICROPHONE INPUT
+  MUTED, OR NO SIGNAL FOUND", "NOTHING IS PLAYING ON THE OUTPUT", "NO CAMERA INPUT"). Its
+  pixel font has the whole alphabet now.
+- Project page: the bar is now drawn by fnstrip's own drawing code, compiled to WebAssembly
+  (`web/`, built by `tools/build_web.sh`): its rows, sliders, keys, themes, meters, camera and
+  spectrum faces and startup animation match the real bar pixel for pixel, instead of a
+  hand-written copy, and triple-tap-and-hold opens the real test screen (all its scenes and
+  stats, timed by the browser). Browsers that can't run it get recordings and pictures instead.
+- Warnings keep their colour in every theme: a low or critical battery stays amber or red, and
+  the temperature graph's near-critical part stays red.
 
 ### Fixed
 
@@ -90,5 +118,6 @@ every 30 seconds. The `net` meter never counts the T1's own link to the Mac.
 - fnstrip carries a modified copy of T1Bridge's renderer, so T1Bridge fixes to it need merging
   by hand.
 
-[Unreleased]: https://github.com/acmccubbin/fnstrip/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/acmccubbin/fnstrip/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/acmccubbin/fnstrip/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/acmccubbin/fnstrip/releases/tag/v0.1.0

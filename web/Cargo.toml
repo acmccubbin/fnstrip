@@ -1,6 +1,6 @@
 [package]
 name = "fnstrip-web"
-version = "0.1.0"
+version = "0.2.0"
 description = "fnstrip's own drawing code, built for the browser (the project page's bar)"
 edition = "2024"
 rust-version = "1.88"
